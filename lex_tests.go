@@ -1,11 +1,8 @@
 package lexarch
 
 import (
-	"autarch"
-	"autarch/regex"
 	"fmt"
 	foundationtesting "foundation/testing"
-	"memarch"
 	"memcore"
 	"memforge"
 	"testing"
@@ -14,10 +11,16 @@ import (
 type tokenType int
 
 const (
-	// Keyword has priority (added first)
+	// Priority order
 	Keyword tokenType = iota // 0
 	Literal                  // 1
-	Invalid                  // 2
+
+	// --- NEW ARCHITECTURE ---
+	// Add a distinct type for skippable tokens
+	Whitespace // 2
+
+	// Invalid is now *only* for dead states
+	Invalid // 3
 )
 
 func TestLexingSimpleLanguage(t *testing.T) {
@@ -40,118 +43,124 @@ func TestLexingSimpleLanguage(t *testing.T) {
 
 	defer memforge.DynamicLinearAllocatorDestroy(allocator)
 
+	// --- Lexer Definition ---
 	keywords := "if|else|elif"
 	literal := "[a-zA-Z]+"
+	whitespace := "[\t\n ]+"
 
-	keywordNFA := produceNFAForRegex(allocFn, keywords, Keyword)
-	literalNFA := produceNFAForRegex(allocFn, literal, Literal)
-
-	// Merge keywords (nfaA) and literals (nfaB).
-	// This gives 'Keyword' priority over 'Literal'
-	merged := autarch.NFAMergeOr(
-		keywordNFA,
-		literalNFA,
+	// Create the lexer using the correct Invalid token
+	lexer := TextLexerCreate(
 		allocFn,
-		Invalid,
-		func(r rune) rune {
-			return r
-		},
-	)
+		Invalid, // Pass the true 'Invalid' type
+		1*memcore.Byte, 1*memcore.GigaByte,
 
-	minimized := minimizeNFA(allocFn, merged)
+		// Rules are in priority order
+		TextLexerRuleCreate(keywords, Keyword),
+		TextLexerRuleCreate(literal, Literal),
+
+		// Whitespace rule now maps to the 'Whitespace' token
+		TextLexerRuleCreate(whitespace, Whitespace),
+	)
 
 	// -----------------------------------------------------------------
 	// Test Suite
 	// -----------------------------------------------------------------
 
 	type testCase struct {
+		name     string
 		input    string
-		expected tokenType
+		expected []Token[tokenType] // Expected *non-whitespace* tokens
+		expError bool               // True if an error is expected
 	}
 
+	// This test table checks streams of tokens
 	tests := []testCase{
-		// --- Group 1: Priority Test (Keywords) ---
-		// These must be 'Keyword', not 'Literal'
-		{"if", Keyword},
-		{"else", Keyword},
-		{"elif", Keyword},
+		// --- Group 1: Single Valid Tokens ---
+		{"Keyword 'if'", "if", []Token[tokenType]{{Lexeme: "if", TokenType: Keyword}}, false},
+		{"Keyword 'else'", "else", []Token[tokenType]{{Lexeme: "else", TokenType: Keyword}}, false},
+		{"Literal 'a'", "a", []Token[tokenType]{{Lexeme: "a", TokenType: Literal}}, false},
+		{"Literal 'i'", "i", []Token[tokenType]{{Lexeme: "i", TokenType: Literal}}, false},
+		{"Literal 'long'", "longword", []Token[tokenType]{{Lexeme: "longword", TokenType: Literal}}, false},
+		{"Literal 'iff'", "iff", []Token[tokenType]{{Lexeme: "iff", TokenType: Literal}}, false},
+		{"Literal 'elsea'", "elsea", []Token[tokenType]{{Lexeme: "elsea", TokenType: Literal}}, false},
 
-		// --- Group 2: Literal Test ---
-		// These are single letters that are *not* keywords
-		{"a", Literal},
-		{"b", Literal},
-		{"z", Literal},
-		// These are prefixes of keywords, but are valid 'Literal' matches
-		{"i", Literal},
-		{"e", Literal},
-		{"ab", Literal},
-		{"zz", Literal},
-		{"A", Literal},
+		// --- Group 2: Empty and Whitespace ---
+		{"Empty", "", []Token[tokenType]{}, false},
+		{"Whitespace only", " \t \n ", []Token[tokenType]{}, false}, // Expects an empty *filtered* list
 
-		// --- Group 3: Invalid Inputs ---
-		// Empty string
-		{"", Invalid},
-		// Prefixes of keywords that are not valid tokens
-		{"el", Literal},
-		{"els", Literal},
-		{"eli", Literal},
-		// Superstrings of keywords
-		{"iff", Literal},
-		{"elsea", Literal},
-		// Out of alphabet
-		{"1", Invalid},
-		{"$", Invalid},
+		// --- Group 3: Multi-Token Streams ---
+		{"Keywords", "if else", []Token[tokenType]{
+			{Lexeme: "if", TokenType: Keyword},
+			{Lexeme: "else", TokenType: Keyword},
+		}, false},
+		{"Mixed", "if myVar else", []Token[tokenType]{
+			{Lexeme: "if", TokenType: Keyword},
+			{Lexeme: "myVar", TokenType: Literal},
+			{Lexeme: "else", TokenType: Keyword},
+		}, false},
+		{"No Space", "ifelif", []Token[tokenType]{
+			{Lexeme: "ifelif", TokenType: Literal},
+		}, false},
+
+		// --- Group 4: Invalid Inputs (Stuck Lexer) ---
+		{"Invalid char '$'", "$", nil, true},
+		{"Invalid char '1'", "1", nil, true},
+		{"Valid then invalid", "if $ else", nil, true},
 	}
 
 	for _, test := range tests {
-		outcome, err := autarch.DFARun(minimized, []rune(test.input))
-		if err != nil {
-			outcome = Invalid
-		}
+		// Shadowing 'test' for the sub-test
+		test := test
+		t.Run(test.name, func(t *testing.T) {
 
-		errMsg := fmt.Sprintf("incorrect outcome, expected=%v, got=%v, input=%q",
-			test.expected, outcome, test.input)
-		successMsg := fmt.Sprintf("correct outcome, expected=%v, got=%v, input=%q",
-			test.expected, outcome, test.input)
+			allTokens, err := TextLexerLex(lexer, test.input)
 
-		foundationtesting.Assert(outcome == test.expected, errMsg, successMsg, t)
+			// 1. Check for expected error
+			if test.expError {
+				errMsg := fmt.Sprintf("expected an error for input %q, but got nil", test.input)
+				successMsg := fmt.Sprintf("correctly got an error for input %q", test.input)
+				foundationtesting.Assert(err != nil, errMsg, successMsg, t)
+				return // Error was expected, test passes
+			}
+
+			// 2. Check for unexpected error
+			errMsg := fmt.Sprintf("did not expect an error for input %q, but got: %v", test.input, err)
+			successMsg := fmt.Sprintf("correctly got no error for input %q", test.input)
+			foundationtesting.Assert(err == nil, errMsg, successMsg, t)
+
+			// 3. Filter out 'Whitespace' tokens
+			filteredTokens := make([]Token[tokenType], 0, len(allTokens))
+			for _, tok := range allTokens {
+				if tok.TokenType != Whitespace {
+					filteredTokens = append(filteredTokens, tok)
+				}
+			}
+
+			// 4. Check token slice length
+			errMsg = fmt.Sprintf("wrong number of tokens for input %q:\n  Expected: %d\n  Got:      %d",
+				test.input, len(test.expected), len(filteredTokens))
+			successMsg = fmt.Sprintf("correct number of tokens for input %q (%d)", test.input, len(filteredTokens))
+			lenOk := len(filteredTokens) == len(test.expected)
+			foundationtesting.Assert(lenOk, errMsg, successMsg, t)
+
+			if !lenOk {
+				return
+			}
+
+			// 5. Check token content
+			for i := range filteredTokens {
+				expectedToken := test.expected[i]
+				gotToken := filteredTokens[i]
+
+				lexOk := gotToken.Lexeme == expectedToken.Lexeme
+				typeOk := gotToken.TokenType == expectedToken.TokenType
+
+				errMsg = fmt.Sprintf("token %d mismatch for input %q:\n  Expected: Lexeme=%q, Type=%v\n  Got:      Lexeme=%q, Type=%v",
+					i, test.input, expectedToken.Lexeme, expectedToken.TokenType, gotToken.Lexeme, gotToken.TokenType)
+				successMsg = fmt.Sprintf("token %d matched for input %q", i, test.input)
+
+				foundationtesting.Assert(lexOk && typeOk, errMsg, successMsg, t)
+			}
+		})
 	}
-}
-
-func produceNFAForRegex(
-	allocationFn memarch.AllocationFn,
-	regexLiteral string, tokType tokenType,
-) *autarch.NFA[rune, tokenType] {
-	nfa, err := regex.RegexToNFA(
-		allocationFn,
-		regexLiteral,
-		tokType,
-		Invalid,
-	)
-
-	if err != nil {
-		panic(err)
-	}
-	return nfa
-}
-
-func minimizeNFA(
-	allocationFn memarch.AllocationFn,
-	nfa *autarch.NFA[rune, tokenType],
-) *autarch.DFA[rune, tokenType] {
-	dfa := autarch.NFAToDFA(
-		nfa,
-		1*memcore.Byte, 1*memcore.GigaByte,
-		allocationFn,
-		Invalid,
-	)
-
-	minimized := autarch.DFAMinimize(
-		dfa,
-		allocationFn,
-		1*memcore.Byte, 1*memcore.GigaByte,
-		Invalid,
-	)
-
-	return minimized
 }
