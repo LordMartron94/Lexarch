@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"memarch"
 	"memcore"
+	"memstruct"
 )
 
 // TextLexerRule defines a rule for lexing.
@@ -199,4 +200,140 @@ func minimizeNFA[TTokenType comparable](
 	)
 
 	return minimized
+}
+
+// TextLexerStream is a stateful, streaming lexer that processes
+// input in chunks.
+type TextLexerStream[TTokenType comparable] struct {
+	stateMachine *autarch.DFA[rune, TTokenType]
+	invalidToken TTokenType
+	transCursor  memstruct.ArrayCursor[uint64]
+
+	buffer []rune
+	cursor int
+	closed bool
+}
+
+// TextLexerStreamCreate creates a new streaming lexer.
+func TextLexerStreamCreate[TTokenType comparable](
+	lexer *TextLexer[TTokenType],
+) *TextLexerStream[TTokenType] {
+	return &TextLexerStream[TTokenType]{
+		stateMachine: lexer.stateMachine,
+		invalidToken: lexer.invalidToken,
+		transCursor:  autarch.DFACursorGet(lexer.stateMachine),
+		buffer:       make([]rune, 0, 4096),
+		cursor:       0,
+		closed:       false,
+	}
+}
+
+// TextLexerStreamAdd adds a chunk of text to the stream's buffer.
+func TextLexerStreamAdd[TTokenType comparable](
+	stream *TextLexerStream[TTokenType],
+	chunk string,
+) {
+	if stream.closed {
+		panic("cannot add data to a closed lexer stream")
+	}
+	stream.buffer = append(stream.buffer, []rune(chunk)...)
+}
+
+// TextLexerStreamClose signals the end of the input (EOF).
+// This tells the lexer to flush any remaining partial tokens
+// on the next call to Next().
+func TextLexerStreamClose[TTokenType comparable](
+	stream *TextLexerStream[TTokenType],
+) {
+	stream.closed = true
+}
+
+// TextLexerStreamNext attempts to read one token from the stream.
+// It returns:
+//
+//	(token, true, nil)    - if a token was successfully lexed.
+//	(Token{}, false, nil) - if more data is needed (call Add/Close).
+//	(Token{}, false, error) - if a lexing error occurred.
+func TextLexerStreamNext[TTokenType comparable](
+	stream *TextLexerStream[TTokenType],
+) (Token[TTokenType], bool, error) {
+
+	// Check if we're at the end of the buffer
+	if stream.cursor == len(stream.buffer) {
+		if stream.closed {
+			return Token[TTokenType]{}, false, nil // Clean EOF
+		}
+
+		return Token[TTokenType]{}, false, nil // Need more data
+	}
+
+	// --- Start the "munch" from the current cursor ---
+	scanPos := stream.cursor
+	currentState := uint64(0)
+	lastValidToken := stream.invalidToken
+	lastValidPos := -1 // -1 = no valid token found yet
+
+	munchLoopBroken := false
+
+	for scanPos < len(stream.buffer) {
+		observation := stream.buffer[scanPos]
+
+		nextState, err := autarch.DFAStep(
+			stream.stateMachine,
+			currentState,
+			observation,
+			stream.transCursor,
+		)
+
+		if err != nil {
+			munchLoopBroken = true
+			break
+		}
+
+		outcome := autarch.DFAStateOutcome(stream.stateMachine, nextState)
+		if outcome == stream.invalidToken {
+			munchLoopBroken = true
+			break
+		}
+
+		// This is a valid, non-invalid token state
+		lastValidToken = outcome
+		lastValidPos = scanPos
+		currentState = nextState
+		scanPos++
+	}
+
+	// --- After the munch loop, analyze the result ---
+
+	if !munchLoopBroken && !stream.closed {
+		return Token[TTokenType]{}, false, nil
+	}
+
+	if lastValidPos == -1 {
+		err := fmt.Errorf(
+			"invalid token at position %d: %q",
+			stream.cursor,
+			string(stream.buffer[stream.cursor]),
+		)
+		return Token[TTokenType]{}, false, err
+	}
+
+	// --- Success: Emit the token ---
+	start := stream.cursor
+	end := lastValidPos + 1
+	lexemeRunes := stream.buffer[start:end]
+	token := Token[TTokenType]{
+		Lexeme:    string(lexemeRunes),
+		TokenType: lastValidToken,
+	}
+
+	stream.cursor = end
+
+	if stream.cursor > 4096 {
+		copy(stream.buffer, stream.buffer[stream.cursor:])
+		stream.buffer = stream.buffer[:len(stream.buffer)-stream.cursor]
+		stream.cursor = 0
+	}
+
+	return token, true, nil
 }
