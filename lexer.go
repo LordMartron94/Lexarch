@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"memarch"
 	"memcore"
-	"memstruct"
 )
 
 // TextLexerRule defines a rule for lexing.
@@ -207,7 +206,6 @@ func minimizeNFA[TTokenType comparable](
 type TextLexerStream[TTokenType comparable] struct {
 	stateMachine *autarch.DFA[rune, TTokenType]
 	invalidToken TTokenType
-	transCursor  memstruct.ArrayCursor[uint64]
 
 	buffer []rune
 	cursor int
@@ -221,7 +219,6 @@ func TextLexerStreamCreate[TTokenType comparable](
 	return &TextLexerStream[TTokenType]{
 		stateMachine: lexer.stateMachine,
 		invalidToken: lexer.invalidToken,
-		transCursor:  autarch.DFACursorGet(lexer.stateMachine),
 		buffer:       make([]rune, 0, 4096),
 		cursor:       0,
 		closed:       false,
@@ -274,6 +271,13 @@ func TextLexerStreamNext[TTokenType comparable](
 	lastValidPos := -1 // -1 = no valid token found yet
 
 	munchLoopBroken := false
+	transCursor := autarch.DFACursorGet(stream.stateMachine)
+
+	startOutcome := autarch.DFAStateOutcome(stream.stateMachine, currentState)
+	if startOutcome != stream.invalidToken {
+		lastValidToken = startOutcome
+		lastValidPos = scanPos - 1
+	}
 
 	for scanPos < len(stream.buffer) {
 		observation := stream.buffer[scanPos]
@@ -282,7 +286,7 @@ func TextLexerStreamNext[TTokenType comparable](
 			stream.stateMachine,
 			currentState,
 			observation,
-			stream.transCursor,
+			transCursor,
 		)
 
 		if err != nil {
@@ -291,14 +295,18 @@ func TextLexerStreamNext[TTokenType comparable](
 		}
 
 		outcome := autarch.DFAStateOutcome(stream.stateMachine, nextState)
-		if outcome == stream.invalidToken {
-			munchLoopBroken = true
-			break
+
+		if outcome != stream.invalidToken {
+			lastValidToken = outcome
+			lastValidPos = scanPos
+		} else {
+			if nextState == currentState && currentState != 0 {
+				munchLoopBroken = true
+				break
+			}
 		}
 
-		// This is a valid, non-invalid token state
-		lastValidToken = outcome
-		lastValidPos = scanPos
+		// We always advance the state to continue scanning
 		currentState = nextState
 		scanPos++
 	}
@@ -310,12 +318,28 @@ func TextLexerStreamNext[TTokenType comparable](
 	}
 
 	if lastValidPos == -1 {
-		err := fmt.Errorf(
-			"invalid token at position %d: %q",
-			stream.cursor,
-			string(stream.buffer[stream.cursor]),
-		)
-		return Token[TTokenType]{}, false, err
+		start := stream.cursor
+		end := start + 1
+
+		if end > len(stream.buffer) {
+			end = len(stream.buffer)
+		}
+
+		lexemeRunes := stream.buffer[start:end]
+		token := Token[TTokenType]{
+			Lexeme:    string(lexemeRunes),
+			TokenType: stream.invalidToken,
+		}
+
+		stream.cursor = end
+
+		if stream.cursor > 4096 {
+			copy(stream.buffer, stream.buffer[stream.cursor:])
+			stream.buffer = stream.buffer[:len(stream.buffer)-stream.cursor]
+			stream.cursor = 0
+		}
+
+		return token, true, nil
 	}
 
 	// --- Success: Emit the token ---
