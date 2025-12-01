@@ -361,3 +361,7 @@ func TextLexerStreamNext[TTokenType comparable](
 
 	return token, true, nil
 }
+
+func TextLexerDebug[TTokenType comparable](lexer *TextLexer[TTokenType]) {
+	fmt.Println(autarch.DFADebugPrint(lexer.stateMachine))
+}
