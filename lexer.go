@@ -324,6 +324,14 @@ type LexerSession[TObservation cmp.Ordered, TState comparable] struct {
 	tokenNumber     int // Next token sequence number (1-indexed)
 }
 
+func (s *LexerSession[TObservation, TState]) Position() int {
+	return s.position
+}
+
+func (s *LexerSession[TObservation, TState]) SetPosition(position int) {
+	s.position = position
+}
+
 /*
 LexerSessionSetState changes the current lexer state, switching to a different ruleset for
 subsequent token recognition. This enables context-sensitive lexing where different tokens
@@ -458,6 +466,14 @@ type StreamingLexerSession[TObservation cmp.Ordered, TState comparable] struct {
 	currentLine     int // Current line number (1-indexed)
 	currentColumn   int // Current column number (1-indexed)
 	tokenNumber     int // Next token sequence number (1-indexed)
+}
+
+func (s *StreamingLexerSession[TObservation, TState]) AbsPosition() int {
+	return s.absPos
+}
+
+func (s *StreamingLexerSession[TObservation, TState]) RestoreAbsolute(position int) {
+	s.absPos = position
 }
 
 /*
@@ -874,50 +890,90 @@ Edge cases:
 func LexerPeek[TObservation cmp.Ordered, TState, TToken comparable](
 	lexer *Lexer[TObservation, TState, TToken],
 	session *LexerSession[TObservation, TState],
+	n int,
 ) (Lexeme[TObservation, TToken], error) {
 
-	if eofLexeme, atEOF := lexerCheckEOF(lexer, session); atEOF {
-		return eofLexeme, nil
-	}
-
-	dfa := lexer.ruleSets[session.currentState]
-
-	resolutionStep, ok := lexer.tokenResolutions[session.currentState]
-	if !ok {
-		resolutionStep = TokenResolutionStepLongest[TToken]
-	}
-
-	token, end, ok := scanLongestMatch(
-		dfa,
-		session.input,
-		session.position,
-		resolutionStep,
-	)
-
-	if !ok {
+	if n < 0 {
 		return Lexeme[TObservation, TToken]{},
-			fmt.Errorf("invalid token at %d", session.position)
+			fmt.Errorf("peek index must be >= 0")
 	}
 
-	start := session.position
-	raw := session.input[start:end]
+	// Snapshot session state
+	pos := session.position
+	line := session.currentLine
+	col := session.currentColumn
+	tokenNum := session.tokenNumber
 
-	// Compute position information (don't update session state for peek)
-	startLine := session.currentLine
-	startColumn := session.currentColumn
-	endLine, endColumn := computePositionFromSlice(raw, session.newlineDetector, startLine, startColumn)
+	var lex Lexeme[TObservation, TToken]
+	var err error
 
-	return Lexeme[TObservation, TToken]{
-		Token:       token,
-		Raw:         raw,
-		Start:       start,
-		End:         end,
-		StartLine:   startLine,
-		StartColumn: startColumn,
-		EndLine:     endLine,
-		EndColumn:   endColumn,
-		TokenNumber: session.tokenNumber, // Use current token number (not incremented)
-	}, nil
+	for i := 0; i <= n; i++ {
+
+		if pos >= len(session.input) {
+			lex = Lexeme[TObservation, TToken]{
+				Token:       lexer.eofToken,
+				Raw:         nil,
+				Start:       pos,
+				End:         pos,
+				StartLine:   line,
+				StartColumn: col,
+				EndLine:     line,
+				EndColumn:   col,
+				TokenNumber: tokenNum,
+			}
+			break
+		}
+
+		dfa := lexer.ruleSets[session.currentState]
+
+		resolutionStep, ok := lexer.tokenResolutions[session.currentState]
+		if !ok {
+			resolutionStep = TokenResolutionStepLongest[TToken]
+		}
+
+		token, end, ok := scanLongestMatch(
+			dfa,
+			session.input,
+			pos,
+			resolutionStep,
+		)
+
+		if !ok {
+			return Lexeme[TObservation, TToken]{},
+				fmt.Errorf("invalid token at %d", pos)
+		}
+
+		raw := session.input[pos:end]
+
+		startLine := line
+		startColumn := col
+		endLine, endColumn := computePositionFromSlice(
+			raw,
+			session.newlineDetector,
+			startLine,
+			startColumn,
+		)
+
+		lex = Lexeme[TObservation, TToken]{
+			Token:       token,
+			Raw:         raw,
+			Start:       pos,
+			End:         end,
+			StartLine:   startLine,
+			StartColumn: startColumn,
+			EndLine:     endLine,
+			EndColumn:   endColumn,
+			TokenNumber: tokenNum,
+		}
+
+		// Advance simulated state (not real session)
+		pos = end
+		line = endLine
+		col = endColumn
+		tokenNum++
+	}
+
+	return lex, err
 }
 
 /*
@@ -992,9 +1048,10 @@ func LexerAssertPeek[TObservation cmp.Ordered, TState, TToken comparable](
 	lexer *Lexer[TObservation, TState, TToken],
 	session *LexerSession[TObservation, TState],
 	expected TToken,
+	n int,
 ) (Lexeme[TObservation, TToken], error) {
 
-	lex, err := LexerPeek(lexer, session)
+	lex, err := LexerPeek(lexer, session, n)
 	if err != nil {
 		return lex, err
 	}
@@ -1117,62 +1174,102 @@ Edge cases:
 func LexerPeekStreaming[TObservation cmp.Ordered, TState, TToken comparable](
 	lexer *Lexer[TObservation, TState, TToken],
 	session *StreamingLexerSession[TObservation, TState],
+	n int,
 ) (Lexeme[TObservation, TToken], error) {
 
-	if eofLexeme, atEOF := lexerCheckEOFStreaming(lexer, session); atEOF {
-		return eofLexeme, nil
-	}
-
-	dfa, ok := lexer.ruleSets[session.currentState]
-	if !ok {
+	if n < 0 {
 		return Lexeme[TObservation, TToken]{},
-			fmt.Errorf("no ruleset for state %v", session.currentState)
+			fmt.Errorf("peek index must be >= 0")
 	}
 
-	resolutionStep, ok := lexer.tokenResolutions[session.currentState]
-	if !ok {
-		resolutionStep = TokenResolutionStepLongest[TToken]
-	}
+	// Snapshot simulated state
+	absPos := session.absPos
+	line := session.currentLine
+	col := session.currentColumn
+	tokenNum := session.tokenNumber
+	buffer := session.buffer
 
-	next := func(i int) (TObservation, bool, error) {
-		if err := streamingEnsureAt(session, i); err != nil {
-			var zero TObservation
-			return zero, false, err
+	var lex Lexeme[TObservation, TToken]
+
+	for i := 0; i <= n; i++ {
+
+		if session.eof && len(buffer) == 0 {
+			lex = Lexeme[TObservation, TToken]{
+				Token:       lexer.eofToken,
+				Raw:         nil,
+				Start:       absPos,
+				End:         absPos,
+				StartLine:   line,
+				StartColumn: col,
+				EndLine:     line,
+				EndColumn:   col,
+				TokenNumber: tokenNum,
+			}
+			break
 		}
-		if i >= len(session.buffer) {
-			var zero TObservation
-			return zero, false, nil
+
+		next := func(j int) (TObservation, bool, error) {
+			if err := streamingEnsureAt(session, j); err != nil {
+				var zero TObservation
+				return zero, false, err
+			}
+			if j >= len(session.buffer) {
+				var zero TObservation
+				return zero, false, nil
+			}
+			return session.buffer[j], true, nil
 		}
-		return session.buffer[i], true, nil
+
+		dfa := lexer.ruleSets[session.currentState]
+
+		resolutionStep, ok := lexer.tokenResolutions[session.currentState]
+		if !ok {
+			resolutionStep = TokenResolutionStepLongest[TToken]
+		}
+
+		token, endRel, found, err := scanCore(dfa, next, resolutionStep)
+		if err != nil {
+			return Lexeme[TObservation, TToken]{}, err
+		}
+		if !found {
+			return Lexeme[TObservation, TToken]{},
+				fmt.Errorf("invalid token at %d", absPos)
+		}
+
+		raw := session.buffer[:endRel]
+
+		startLine := line
+		startColumn := col
+		endLine, endColumn := computePositionFromSlice(
+			raw,
+			session.newlineDetector,
+			startLine,
+			startColumn,
+		)
+
+		lex = Lexeme[TObservation, TToken]{
+			Token:       token,
+			Raw:         raw,
+			Start:       absPos,
+			End:         absPos + endRel,
+			StartLine:   startLine,
+			StartColumn: startColumn,
+			EndLine:     endLine,
+			EndColumn:   endColumn,
+			TokenNumber: tokenNum,
+		}
+
+		// Advance simulated state
+		absPos += endRel
+		line = endLine
+		col = endColumn
+		tokenNum++
+
+		buffer = buffer[endRel:]
+		session.buffer = buffer
 	}
 
-	token, endRel, found, err := scanCore(dfa, next, resolutionStep)
-	if err != nil {
-		return Lexeme[TObservation, TToken]{}, err
-	}
-	if !found {
-		return Lexeme[TObservation, TToken]{},
-			fmt.Errorf("invalid token at %d", session.absPos)
-	}
-
-	raw := session.buffer[:endRel]
-
-	// Compute position information (don't update session state for peek)
-	startLine := session.currentLine
-	startColumn := session.currentColumn
-	endLine, endColumn := computePositionFromSlice(raw, session.newlineDetector, startLine, startColumn)
-
-	return Lexeme[TObservation, TToken]{
-		Token:       token,
-		Raw:         raw,
-		Start:       session.absPos,
-		End:         session.absPos + endRel,
-		StartLine:   startLine,
-		StartColumn: startColumn,
-		EndLine:     endLine,
-		EndColumn:   endColumn,
-		TokenNumber: session.tokenNumber,
-	}, nil
+	return lex, nil
 }
 
 /*
@@ -1253,9 +1350,10 @@ func LexerAssertPeekStreaming[TObservation cmp.Ordered, TState, TToken comparabl
 	lexer *Lexer[TObservation, TState, TToken],
 	session *StreamingLexerSession[TObservation, TState],
 	expected TToken,
+	n int,
 ) (Lexeme[TObservation, TToken], error) {
 
-	lex, err := LexerPeekStreaming(lexer, session)
+	lex, err := LexerPeekStreaming(lexer, session, n)
 	if err != nil {
 		return lex, err
 	}

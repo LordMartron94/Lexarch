@@ -263,8 +263,8 @@ func testPeekPath(t *testing.T, lexer *Lexer[rune, LexerState, TestToken]) {
 		NewlineDetectorRune(),
 	)
 
-	p1, _ := LexerPeek(lexer, session)
-	p2, _ := LexerPeek(lexer, session)
+	p1, _ := LexerPeek(lexer, session, 0)
+	p2, _ := LexerPeek(lexer, session, 0)
 
 	ftesting.Assert(
 		p1.Token == KeywordIfToken,
