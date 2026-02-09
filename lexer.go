@@ -773,31 +773,16 @@ func LexerClose[TObservation cmp.Ordered, TState, TToken comparable](lexer *Lexe
 }
 
 /*
-LexerConsume recognizes and consumes the next token from the input stream at the current position.
-The session position is advanced past the recognized token. Uses longest match scanning to resolve
-ambiguous patterns. Returns the EOF token when the end of input is reached.
+LexerConsume recognizes and consumes the next token.
+
+Equivalent to Peek(0) followed by advancing the session.
+
+Time complexity:
+- O(length of matched token)
 
 Use cases:
-- Tokenizing input streams incrementally
-- Building parsers that consume tokens sequentially
-- Processing input with state-based token recognition
-
-Time complexity: O(n) where n is the length of the matched token, O(1) for EOF detection
-Space complexity: O(1) - returns slice into original input
-
-Prerequisites:
-- lexer must be a valid, non-closed lexer
-- session must be a valid session with valid current state
-- session position must be within input bounds or at end
-
-Edge cases:
-- Returns EOF token when position is at end of input (position >= len(input))
-- Returns error if no pattern matches at current position (and not at EOF)
-- Returns error if current state has no ruleset
-- Advances position past recognized token (or stays at end for EOF)
-- Raw slice is empty for EOF token
-- Raw slice is a view into session input, so lifetime depends on input
-- Longest match is used when multiple patterns match
+- Sequential token consumption
+- Recursive descent parsers
 */
 func LexerConsume[TObservation cmp.Ordered, TState, TToken comparable](
 	lexer *Lexer[TObservation, TState, TToken],
@@ -847,31 +832,64 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken comparable](
 }
 
 /*
-LexerPeek recognizes the next token from the input stream without advancing the session position.
-This allows lookahead without consuming tokens. Uses longest match scanning to resolve ambiguous patterns.
-Returns the EOF token when the end of input is reached.
+LexerConsumeRange consumes and returns up to `count` tokens.
+
+Equivalent to calling LexerConsume repeatedly, but uses a shared scanning pass.
+
+If EOF is encountered early, an EOF lexeme is included and consumption stops.
+*/
+func LexerConsumeRange[TObservation cmp.Ordered, TState, TToken comparable](
+	lexer *Lexer[TObservation, TState, TToken],
+	session *LexerSession[TObservation, TState],
+	count int,
+) ([]Lexeme[TObservation, TToken], error) {
+
+	if count < 0 {
+		return nil, fmt.Errorf("count must be >= 0")
+	}
+
+	ctx := scannerFromSlice(session)
+
+	lexemes, err := lexerPeekRangeCore(
+		lexer,
+		ctx,
+		session.currentState,
+		session.newlineDetector,
+		session.currentLine,
+		session.currentColumn,
+		session.tokenNumber,
+		count,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Update real session state from last token
+	if len(lexemes) > 0 {
+		last := lexemes[len(lexemes)-1]
+		session.currentLine = last.EndLine
+		session.currentColumn = last.EndColumn
+		session.tokenNumber += len(lexemes)
+	}
+
+	return lexemes, nil
+}
+
+/*
+LexerPeek returns the n-th token ahead without consuming input.
+
+Peek(0) returns the current token.
+Peek(1) returns the next token, etc.
+
+This function never mutates the session state.
+
+Time complexity:
+- O(total length of tokens scanned up to n)
 
 Use cases:
-- Lookahead for parser decision-making
-- Checking next token without consuming it
-- Implementing parser backtracking or multi-token lookahead
-
-Time complexity: O(n) where n is the length of the matched token, O(1) for EOF detection
-Space complexity: O(1) - returns slice into original input
-
-Prerequisites:
-- lexer must be a valid, non-closed lexer
-- session must be a valid session with valid current state
-- session position must be within input bounds or at end
-
-Edge cases:
-- Returns EOF token when position is at end of input (position >= len(input))
-- Returns error if no pattern matches at current position (and not at EOF)
-- Does not modify session position
-- Raw slice is empty for EOF token
-- Raw slice is a view into session input, so lifetime depends on input
-- Longest match is used when multiple patterns match
-- Multiple peeks return the same token until position changes
+- LL(k) parsing
+- Predictive parsing
+- Grammar lookahead
 */
 func LexerPeek[TObservation cmp.Ordered, TState, TToken comparable](
 	lexer *Lexer[TObservation, TState, TToken],
@@ -938,6 +956,40 @@ func LexerPeek[TObservation cmp.Ordered, TState, TToken comparable](
 	}
 
 	return lex, nil
+}
+
+/*
+LexerPeekRange returns up to `count` upcoming tokens without consuming input.
+
+PeekRange(1) returns the current token.
+PeekRange(2) returns [current, next].
+
+The session state is not modified.
+
+If EOF is encountered early, an EOF lexeme is included and scanning stops.
+*/
+func LexerPeekRange[TObservation cmp.Ordered, TState, TToken comparable](
+	lexer *Lexer[TObservation, TState, TToken],
+	session *LexerSession[TObservation, TState],
+	count int,
+) ([]Lexeme[TObservation, TToken], error) {
+
+	if count < 0 {
+		return nil, fmt.Errorf("count must be >= 0")
+	}
+
+	ctx := scannerFromSliceSimulated(session)
+
+	return lexerPeekRangeCore(
+		lexer,
+		ctx,
+		session.currentState,
+		session.newlineDetector,
+		session.currentLine,
+		session.currentColumn,
+		session.tokenNumber,
+		count,
+	)
 }
 
 /*
@@ -1031,20 +1083,9 @@ func LexerAssertPeek[TObservation cmp.Ordered, TState, TToken comparable](
 }
 
 /*
-LexerConsumeStreaming recognizes and consumes the next token from a streaming input session.
-Behavior matches LexerConsume, but input is obtained lazily from the session’s producer.
+LexerConsumeStreaming consumes the next token from a streaming session.
 
-Use cases:
-- Online tokenization as bytes/runes arrive
-- Streaming parsers that consume tokens sequentially
-
-Time complexity: O(n) where n is matched token length (plus producer cost)
-Space complexity: O(1) excluding the session buffer
-
-Edge cases:
-- Returns EOF token when producer reaches EOF and buffer is empty
-- Returns error if no pattern matches at current position (and not at EOF)
-- Returns error if buffering would exceed maxBufferedObservations
+Equivalent to LexerConsume for streaming inputs.
 */
 func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken comparable](
 	lexer *Lexer[TObservation, TState, TToken],
@@ -1097,20 +1138,57 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken comparable](
 }
 
 /*
-LexerPeekStreaming recognizes the next token from a streaming input session without consuming it.
-Behavior matches LexerPeek, but input is obtained lazily from the session’s producer.
+LexerConsumeRangeStreaming consumes and returns up to `count` tokens
+from a streaming session.
 
-Use cases:
-- Lookahead in streaming parsers
-- Conditional parsing decisions without consumption
+Equivalent to repeated LexerConsumeStreaming calls but uses
+a single scanning pass.
+*/
+func LexerConsumeRangeStreaming[TObservation cmp.Ordered, TState, TToken comparable](
+	lexer *Lexer[TObservation, TState, TToken],
+	session *StreamingLexerSession[TObservation, TState],
+	count int,
+) ([]Lexeme[TObservation, TToken], error) {
 
-Time complexity: O(n) where n is matched token length (plus producer cost)
-Space complexity: O(1) excluding the session buffer
+	if count < 0 {
+		return nil, fmt.Errorf("count must be >= 0")
+	}
 
-Edge cases:
-- Returns EOF token when producer reaches EOF and buffer is empty
-- Returns error if no pattern matches at current position (and not at EOF)
-- Returns error if buffering would exceed maxBufferedObservations
+	ctx := scannerFromStreaming(session)
+
+	lexemes, err := lexerPeekRangeCore(
+		lexer,
+		ctx,
+		session.currentState,
+		session.newlineDetector,
+		session.currentLine,
+		session.currentColumn,
+		session.tokenNumber,
+		count,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(lexemes) > 0 {
+		last := lexemes[len(lexemes)-1]
+		session.currentLine = last.EndLine
+		session.currentColumn = last.EndColumn
+		session.tokenNumber += len(lexemes)
+	}
+
+	return lexemes, nil
+}
+
+/*
+LexerPeekStreaming performs lookahead on a streaming session.
+
+Identical semantics to LexerPeek, but input is sourced lazily
+from the producer and buffered as needed.
+
+PeekStreaming(0) returns the current token.
+
+This function does NOT consume input.
 */
 func LexerPeekStreaming[TObservation cmp.Ordered, TState, TToken comparable](
 	lexer *Lexer[TObservation, TState, TToken],
@@ -1181,6 +1259,38 @@ func LexerPeekStreaming[TObservation cmp.Ordered, TState, TToken comparable](
 	}
 
 	return lex, nil
+}
+
+/*
+LexerPeekRangeStreaming returns up to `count` upcoming tokens from a streaming session
+without consuming input.
+
+Buffer growth is bounded by maxBufferedObservations.
+
+The session state is not modified.
+*/
+func LexerPeekRangeStreaming[TObservation cmp.Ordered, TState, TToken comparable](
+	lexer *Lexer[TObservation, TState, TToken],
+	session *StreamingLexerSession[TObservation, TState],
+	count int,
+) ([]Lexeme[TObservation, TToken], error) {
+
+	if count < 0 {
+		return nil, fmt.Errorf("count must be >= 0")
+	}
+
+	ctx := scannerFromStreamingSimulated(session)
+
+	return lexerPeekRangeCore(
+		lexer,
+		ctx,
+		session.currentState,
+		session.newlineDetector,
+		session.currentLine,
+		session.currentColumn,
+		session.tokenNumber,
+		count,
+	)
 }
 
 /*
@@ -1617,5 +1727,237 @@ func streamingMaybeCompact[TObservation cmp.Ordered, TState comparable](session 
 		buf := make([]TObservation, len(session.buffer))
 		copy(buf, session.buffer)
 		session.buffer = buf
+	}
+}
+
+func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken comparable](
+	lexer *Lexer[TObservation, TState, TToken],
+	ctx scannerContext[TObservation],
+	state TState,
+	newlineDetector NewlineDetector[TObservation],
+	startLine, startCol, startToken int,
+	count int,
+) ([]Lexeme[TObservation, TToken], error) {
+
+	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, state)
+	if err != nil {
+		return nil, err
+	}
+
+	st := scanState{
+		pos:      ctx.position(),
+		line:     startLine,
+		col:      startCol,
+		tokenNum: startToken,
+	}
+
+	out := make([]Lexeme[TObservation, TToken], 0, count)
+
+	for i := 0; i < count; i++ {
+		if ctx.atEOF() {
+			out = append(out, lexemeEOF[TObservation](
+				lexer.eofToken,
+				st.pos,
+				st.line,
+				st.col,
+				st.tokenNum,
+			))
+			break
+		}
+
+		token, raw, found, err := scanOne(ctx, dfa, resolutionStep)
+		if err != nil || !found {
+			return nil, fmt.Errorf("invalid token at %d", st.pos)
+		}
+
+		lex := lexemeBuild(
+			token,
+			raw,
+			st.pos,
+			st.pos+len(raw),
+			st.line,
+			st.col,
+			newlineDetector,
+			st.tokenNum,
+		)
+
+		out = append(out, lex)
+		scanStateAdvance(&st, raw, newlineDetector)
+
+		// simulated advance only
+		ctx.advanceRaw(raw)
+	}
+
+	return out, nil
+}
+
+func scanOne[TObservation cmp.Ordered, TToken comparable](
+	ctx scannerContext[TObservation],
+	dfa *autarch.DFA[TObservation, TokenOutcome[TToken]],
+	resolutionStep TokenResolutionStepFn[TToken],
+) (token TToken, raw []TObservation, found bool, err error) {
+
+	token, endRel, found, err := scanCore(dfa, ctx.next, resolutionStep)
+	if err != nil || !found {
+		return token, nil, found, err
+	}
+
+	raw = ctx.slice(0, endRel)
+	return token, raw, true, nil
+}
+
+type scannerContext[TObservation cmp.Ordered] struct {
+	next       func(int) (TObservation, bool, error)
+	slice      func(start, end int) []TObservation
+	atEOF      func() bool
+	position   func() int
+	advanceRaw func(raw []TObservation)
+}
+
+func scannerFromSlice[TObservation cmp.Ordered, TState comparable](
+	session *LexerSession[TObservation, TState],
+) scannerContext[TObservation] {
+
+	return scannerContext[TObservation]{
+		next: func(i int) (TObservation, bool, error) {
+			pos := session.position + i
+			if pos >= len(session.input) {
+				var zero TObservation
+				return zero, false, nil
+			}
+			return session.input[pos], true, nil
+		},
+
+		slice: func(start, end int) []TObservation {
+			return session.input[start:end]
+		},
+
+		atEOF: func() bool {
+			return session.position >= len(session.input)
+		},
+
+		position: func() int {
+			return session.position
+		},
+
+		advanceRaw: func(raw []TObservation) {
+			session.position += len(raw)
+		},
+	}
+}
+
+func scannerFromStreaming[TObservation cmp.Ordered, TState comparable](
+	session *StreamingLexerSession[TObservation, TState],
+) scannerContext[TObservation] {
+
+	next := streamingNextFn(session)
+
+	return scannerContext[TObservation]{
+		next: next,
+
+		slice: func(start, end int) []TObservation {
+			return session.buffer[start:end]
+		},
+
+		atEOF: func() bool {
+			return session.eof && len(session.buffer) == 0
+		},
+
+		position: func() int {
+			return session.absPos
+		},
+
+		advanceRaw: func(raw []TObservation) {
+			n := len(raw)
+			session.absPos += n
+			session.buffer = session.buffer[n:]
+			streamingMaybeCompact(session)
+		},
+	}
+}
+
+func scannerFromSliceSimulated[TObservation cmp.Ordered, TState comparable](
+	session *LexerSession[TObservation, TState],
+) scannerContext[TObservation] {
+
+	pos := session.position
+
+	return scannerContext[TObservation]{
+		next: func(i int) (TObservation, bool, error) {
+			p := pos + i
+			if p >= len(session.input) {
+				var zero TObservation
+				return zero, false, nil
+			}
+			return session.input[p], true, nil
+		},
+
+		slice: func(start, end int) []TObservation {
+			return session.input[pos+start : pos+end]
+		},
+
+		atEOF: func() bool {
+			return pos >= len(session.input)
+		},
+
+		position: func() int {
+			return pos
+		},
+
+		advanceRaw: func(raw []TObservation) {
+			pos += len(raw)
+		},
+	}
+}
+
+func scannerFromStreamingSimulated[TObservation cmp.Ordered, TState comparable](
+	session *StreamingLexerSession[TObservation, TState],
+) scannerContext[TObservation] {
+
+	buffer := session.buffer
+	absPos := session.absPos
+	atEOF := func() bool {
+		return session.eof && len(buffer) == 0
+	}
+
+	next := func(i int) (TObservation, bool, error) {
+		if i >= len(buffer) {
+			if atEOF() {
+				var zero TObservation
+				return zero, false, nil
+			}
+			if err := streamingEnsureAt(session, i); err != nil {
+				var zero TObservation
+				return zero, false, err
+			}
+			buffer = session.buffer
+		}
+		if i >= len(buffer) {
+			var zero TObservation
+			return zero, false, nil
+		}
+		return buffer[i], true, nil
+	}
+
+	return scannerContext[TObservation]{
+		next: next,
+
+		slice: func(start, end int) []TObservation {
+			return buffer[start:end]
+		},
+
+		atEOF: func() bool {
+			return atEOF() && len(buffer) == 0
+		},
+
+		position: func() int {
+			return absPos
+		},
+
+		advanceRaw: func(raw []TObservation) {
+			n := len(raw)
+			absPos += n
+			buffer = buffer[n:]
+		},
 	}
 }
