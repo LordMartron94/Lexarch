@@ -32,11 +32,17 @@ const (
 	EOFToken
 )
 
+type TokenRole int
+
+const (
+	DefaultTokenRole TokenRole = iota + 1
+)
+
 // ============================================================
 // Test formatter with readable token and state names
 // ============================================================
 
-func createTestFormatter() *autarch.DFADebugFormatter[rune, TokenOutcome[TestToken]] {
+func createTestFormatter() *autarch.DFADebugFormatter[rune, TokenOutcome[TestToken, TokenRole]] {
 	// Map token values to names
 	tokenNames := map[TestToken]string{
 		WhitespaceToken: "WhitespaceToken",
@@ -51,11 +57,11 @@ func createTestFormatter() *autarch.DFADebugFormatter[rune, TokenOutcome[TestTok
 		NormalState: "NormalState",
 	}
 
-	baseFormatter := LexerDebugFormatterCreateRune[LexerState, TestToken]()
+	baseFormatter := LexerDebugFormatterCreateRune[LexerState, TestToken, TokenRole]()
 
-	return &autarch.DFADebugFormatter[rune, TokenOutcome[TestToken]]{
+	return &autarch.DFADebugFormatter[rune, TokenOutcome[TestToken, TokenRole]]{
 		FormatSymbolName: baseFormatter.FormatSymbolName,
-		FormatStateOutcome: func(outcome TokenOutcome[TestToken]) string {
+		FormatStateOutcome: func(outcome TokenOutcome[TestToken, TokenRole]) string {
 			tokenName := tokenNames[outcome.Token]
 			if tokenName == "" {
 				tokenName = fmt.Sprintf("Token(%d)", outcome.Token)
@@ -78,7 +84,7 @@ func createTestFormatter() *autarch.DFADebugFormatter[rune, TokenOutcome[TestTok
 // Build lexer
 // ============================================================
 
-func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken], allocator memcore.MarkRaw) {
+func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken, TokenRole], allocator memcore.MarkRaw) {
 	allocator = memforge.DynamicLinearAllocatorCreateFunction(
 		uint64(memcore.KiloByte),
 		func(currentCap, neededCap uint64) uint64 {
@@ -100,7 +106,7 @@ func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken], allocator memc
 		}
 	}()
 
-	rules := LexingRulesetCreate[rune](
+	rules := LexingRulesetCreate[rune, TestToken, TokenRole](
 		TokenResolutionStepPriority[TestToken],
 	)
 
@@ -116,12 +122,12 @@ func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken], allocator memc
 	word := lower.Plus()
 	keywordIf := pattern.Literal('i', 'f')
 
-	rules.WithRulePriority(keywordIf, KeywordIfToken, 10)
-	rules.WithRule(word, WordToken)
-	rules.WithRule(whitespace, WhitespaceToken)
+	rules.WithRulePriority(keywordIf, KeywordIfToken, DefaultTokenRole, 10)
+	rules.WithRule(word, WordToken, DefaultTokenRole)
+	rules.WithRule(whitespace, WhitespaceToken, DefaultTokenRole)
 
 	lexer = LexerCreate(
-		map[LexerState]LexingRuleset[rune, TestToken]{
+		map[LexerState]LexingRuleset[rune, TestToken, TokenRole]{
 			NormalState: *rules,
 		},
 		ErrorToken,
@@ -152,7 +158,7 @@ func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken], allocator memc
 // ============================================================
 
 func LexarchTestLexer(t *testing.T) {
-	var lexer *Lexer[rune, LexerState, TestToken]
+	var lexer *Lexer[rune, LexerState, TestToken, TokenRole]
 	var allocator memcore.MarkRaw
 	allocatorCreated := false
 
@@ -191,7 +197,7 @@ func LexarchTestLexer(t *testing.T) {
 // Classic path with full diagnostics
 // ============================================================
 
-func testClassicPath(t *testing.T, lexer *Lexer[rune, LexerState, TestToken]) {
+func testClassicPath(t *testing.T, lexer *Lexer[rune, LexerState, TestToken, TokenRole]) {
 
 	input := []rune("if test\nif")
 
@@ -253,7 +259,7 @@ func testClassicPath(t *testing.T, lexer *Lexer[rune, LexerState, TestToken]) {
 // Peek diagnostics
 // ============================================================
 
-func testPeekPath(t *testing.T, lexer *Lexer[rune, LexerState, TestToken]) {
+func testPeekPath(t *testing.T, lexer *Lexer[rune, LexerState, TestToken, TokenRole]) {
 
 	input := []rune("if")
 
@@ -294,7 +300,7 @@ func testPeekPath(t *testing.T, lexer *Lexer[rune, LexerState, TestToken]) {
 // Priority test
 // ============================================================
 
-func testPriorityResolution(t *testing.T, lexer *Lexer[rune, LexerState, TestToken]) {
+func testPriorityResolution(t *testing.T, lexer *Lexer[rune, LexerState, TestToken, TokenRole]) {
 
 	input := []rune("if")
 
@@ -318,7 +324,7 @@ func testPriorityResolution(t *testing.T, lexer *Lexer[rune, LexerState, TestTok
 // Error handling
 // ============================================================
 
-func testErrorHandling(t *testing.T, lexer *Lexer[rune, LexerState, TestToken]) {
+func testErrorHandling(t *testing.T, lexer *Lexer[rune, LexerState, TestToken, TokenRole]) {
 
 	input := []rune("@")
 
@@ -342,7 +348,7 @@ func testErrorHandling(t *testing.T, lexer *Lexer[rune, LexerState, TestToken]) 
 // Streaming path (callback-based input)
 // ============================================================
 
-func testStreamingPath(t *testing.T, lexer *Lexer[rune, LexerState, TestToken]) {
+func testStreamingPath(t *testing.T, lexer *Lexer[rune, LexerState, TestToken, TokenRole]) {
 
 	input := []rune("if test\nif")
 

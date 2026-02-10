@@ -12,9 +12,10 @@ import (
 
 // ------------------------------------------------------ RULES
 
-type lexingRule[TObservation cmp.Ordered, TToken comparable] struct {
+type lexingRule[TObservation cmp.Ordered, TToken, TTokenRole comparable] struct {
 	pattern  pattern.RegulaAST[TObservation]
 	token    TToken
+	role     TTokenRole
 	priority int
 }
 
@@ -38,9 +39,10 @@ Edge cases:
 - Priority can be any integer value (0 is default)
 - Token must be distinct from error token
 */
-type TokenOutcome[TToken comparable] struct {
-	Token    TToken
-	Priority int
+type TokenOutcome[TToken, TTokenRole comparable] struct {
+	Token     TToken
+	TokenRole TTokenRole
+	Priority  int
 }
 
 /*
@@ -124,8 +126,8 @@ Edge cases:
 - Rules are evaluated in order, with longest match taking precedence
 - Multiple rules matching the same input will prefer the longest match
 */
-type LexingRuleset[TObservation cmp.Ordered, TToken comparable] struct {
-	precompiledRules    []lexingRule[TObservation, TToken]
+type LexingRuleset[TObservation cmp.Ordered, TToken, TTokenRole comparable] struct {
+	precompiledRules    []lexingRule[TObservation, TToken, TTokenRole]
 	tokenResolutionStep TokenResolutionStepFn[TToken]
 }
 
@@ -149,10 +151,11 @@ Edge cases:
 - Patterns are stored by reference, so modifications to the pattern after adding may affect behavior
 - Order of rule addition matters for longest match resolution
 */
-func (l *LexingRuleset[TObservation, TToken]) WithRule(pattern pattern.RegulaAST[TObservation], token TToken) {
-	l.precompiledRules = append(l.precompiledRules, lexingRule[TObservation, TToken]{
+func (l *LexingRuleset[TObservation, TToken, TTokenRole]) WithRule(pattern pattern.RegulaAST[TObservation], token TToken, role TTokenRole) {
+	l.precompiledRules = append(l.precompiledRules, lexingRule[TObservation, TToken, TTokenRole]{
 		pattern:  pattern,
 		token:    token,
+		role:     role,
 		priority: 0,
 	})
 }
@@ -179,14 +182,16 @@ Edge cases:
 - Higher priority values win in priority-based resolution
 - Patterns are stored by reference, so modifications may affect behavior
 */
-func (l *LexingRuleset[TObservation, TToken]) WithRulePriority(
+func (l *LexingRuleset[TObservation, TToken, TTokenRole]) WithRulePriority(
 	pattern pattern.RegulaAST[TObservation],
 	token TToken,
+	role TTokenRole,
 	priority int,
 ) {
-	l.precompiledRules = append(l.precompiledRules, lexingRule[TObservation, TToken]{
+	l.precompiledRules = append(l.precompiledRules, lexingRule[TObservation, TToken, TTokenRole]{
 		pattern:  pattern,
 		token:    token,
+		role:     role,
 		priority: priority,
 	})
 }
@@ -209,14 +214,14 @@ Edge cases:
 - Returns empty ruleset that must have rules added before use
 - Empty rulesets will compile to DFAs that never accept
 */
-func LexingRulesetCreate[TObservation cmp.Ordered, TToken comparable](
+func LexingRulesetCreate[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	tokenResolutionStep TokenResolutionStepFn[TToken],
-) *LexingRuleset[TObservation, TToken] {
+) *LexingRuleset[TObservation, TToken, TTokenRole] {
 	if tokenResolutionStep == nil {
 		tokenResolutionStep = TokenResolutionStepLongest[TToken]
 	}
-	return &LexingRuleset[TObservation, TToken]{
-		precompiledRules:    make([]lexingRule[TObservation, TToken], 0),
+	return &LexingRuleset[TObservation, TToken, TTokenRole]{
+		precompiledRules:    make([]lexingRule[TObservation, TToken, TTokenRole], 0),
 		tokenResolutionStep: tokenResolutionStep,
 	}
 }
@@ -241,9 +246,9 @@ Edge cases:
 - Setting nil resolution uses default (longest match)
 - Resolution function is used during scanning
 */
-func (l *LexingRuleset[TObservation, TToken]) WithTokenResolution(
+func (l *LexingRuleset[TObservation, TToken, TTokenRole]) WithTokenResolution(
 	resolutionStep TokenResolutionStepFn[TToken],
-) *LexingRuleset[TObservation, TToken] {
+) *LexingRuleset[TObservation, TToken, TTokenRole] {
 	if resolutionStep == nil {
 		resolutionStep = TokenResolutionStepLongest[TToken]
 	}
@@ -276,7 +281,7 @@ Edge cases:
 - Token may be the error token if recognition failed
 - Token may be the EOF token when end of input is reached
 */
-type Lexeme[TObservation cmp.Ordered, TToken comparable] struct {
+type Lexeme[TObservation cmp.Ordered, TToken, TTokenRole comparable] struct {
 	Raw   []TObservation
 	Token TToken
 
@@ -288,6 +293,8 @@ type Lexeme[TObservation cmp.Ordered, TToken comparable] struct {
 	EndLine     int // Line number where token ends
 	EndColumn   int // Column number where token ends
 	TokenNumber int // Sequence number of this token
+
+	Role TTokenRole
 }
 
 /*
@@ -571,8 +578,8 @@ Edge cases:
 - EOF token is returned when end of input is reached
 - Multiple sessions can use the same lexer concurrently
 */
-type Lexer[TObservation cmp.Ordered, TState, TToken comparable] struct {
-	ruleSets         map[TState]*autarch.DFA[TObservation, TokenOutcome[TToken]]
+type Lexer[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable] struct {
+	ruleSets         map[TState]*autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]]
 	tokenResolutions map[TState]TokenResolutionStepFn[TToken]
 
 	dfaAllocator memcore.MarkRaw
@@ -611,13 +618,13 @@ Edge cases:
 - The lexer must be closed via LexerClose to free resources
 - EOF token is returned when position reaches end of input
 */
-func LexerCreate[TObservation cmp.Ordered, TState, TToken comparable](
-	inputRulesets map[TState]LexingRuleset[TObservation, TToken],
+func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	inputRulesets map[TState]LexingRuleset[TObservation, TToken, TTokenRole],
 	errorToken TToken,
 	eofToken TToken,
 	scratchAllocationFn memarch.AllocationFn,
 	maxDFAAllocatorMemory memcore.MemoryUnitBytes,
-) *Lexer[TObservation, TState, TToken] {
+) *Lexer[TObservation, TState, TToken, TTokenRole] {
 	dfaAllocator := memforge.DynamicLinearAllocatorCreateFunction(uint64(memcore.KiloByte), func(currentCap, neededCap uint64) uint64 {
 		newSize := min(currentCap*2, neededCap)
 
@@ -628,7 +635,7 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken comparable](
 		return newSize
 	})
 
-	lexerRulesets := make(map[TState]*autarch.DFA[TObservation, TokenOutcome[TToken]])
+	lexerRulesets := make(map[TState]*autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]])
 	tokenResolutions := make(map[TState]TokenResolutionStepFn[TToken])
 
 	for state, ruleset := range inputRulesets {
@@ -646,7 +653,7 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken comparable](
 		}
 	}
 
-	return &Lexer[TObservation, TState, TToken]{
+	return &Lexer[TObservation, TState, TToken, TTokenRole]{
 		ruleSets:         lexerRulesets,
 		tokenResolutions: tokenResolutions,
 		dfaAllocator:     dfaAllocator,
@@ -677,10 +684,10 @@ Edge cases:
 - Safe to call on closed lexer (returns empty string)
 - If formatter is nil, uses default formatting
 */
-func LexerDebugDFA[TObservation cmp.Ordered, TState, TToken comparable](
-	lexer *Lexer[TObservation, TState, TToken],
+func LexerDebugDFA[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	state TState,
-	formatter *autarch.DFADebugFormatter[TObservation, TokenOutcome[TToken]],
+	formatter *autarch.DFADebugFormatter[TObservation, TokenOutcome[TToken, TTokenRole]],
 ) string {
 	dfa, ok := lexer.ruleSets[state]
 	if !ok {
@@ -716,8 +723,8 @@ Edge cases:
 - Falls back to numeric representation if parsing fails
 - Maintains table alignment with fixed-width formatting
 */
-func LexerDebugFormatterCreateRune[TState, TToken comparable]() *autarch.DFADebugFormatter[rune, TokenOutcome[TToken]] {
-	return &autarch.DFADebugFormatter[rune, TokenOutcome[TToken]]{
+func LexerDebugFormatterCreateRune[TState, TToken, TTokenRole comparable]() *autarch.DFADebugFormatter[rune, TokenOutcome[TToken, TTokenRole]] {
+	return &autarch.DFADebugFormatter[rune, TokenOutcome[TToken, TTokenRole]]{
 		FormatSymbolName: func(symbolID uint64, name string, observation *rune) string {
 			if observation != nil {
 				r := *observation
@@ -735,7 +742,7 @@ func LexerDebugFormatterCreateRune[TState, TToken comparable]() *autarch.DFADebu
 			}
 			return name
 		},
-		FormatStateOutcome: func(outcome TokenOutcome[TToken]) string {
+		FormatStateOutcome: func(outcome TokenOutcome[TToken, TTokenRole]) string {
 			return fmt.Sprintf("{Token: %v, Priority: %d}", outcome.Token, outcome.Priority)
 		},
 		FormatSymbolID: func(symbolID uint64) string {
@@ -768,7 +775,7 @@ Edge cases:
 - All DFAs become invalid after closing
 - Sessions using this lexer will fail on subsequent operations
 */
-func LexerClose[TObservation cmp.Ordered, TState, TToken comparable](lexer *Lexer[TObservation, TState, TToken]) {
+func LexerClose[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](lexer *Lexer[TObservation, TState, TToken, TTokenRole]) {
 	memforge.DynamicLinearAllocatorDestroy(lexer.dfaAllocator)
 }
 
@@ -784,10 +791,10 @@ Use cases:
 - Sequential token consumption
 - Recursive descent parsers
 */
-func LexerConsume[TObservation cmp.Ordered, TState, TToken comparable](
-	lexer *Lexer[TObservation, TState, TToken],
+func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *LexerSession[TObservation, TState],
-) (Lexeme[TObservation, TToken], error) {
+) (Lexeme[TObservation, TToken, TTokenRole], error) {
 
 	if eofLexeme, atEOF := lexerCheckEOF(lexer, session); atEOF {
 		return eofLexeme, nil
@@ -795,17 +802,17 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken comparable](
 
 	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
 	if err != nil {
-		return Lexeme[TObservation, TToken]{}, err
+		return Lexeme[TObservation, TToken, TTokenRole]{}, err
 	}
 
-	token, end, ok := scanLongestMatch(
+	token, tokenRole, end, ok := scanLongestMatch(
 		dfa,
 		session.input,
 		session.position,
 		resolutionStep,
 	)
 	if !ok {
-		return Lexeme[TObservation, TToken]{},
+		return Lexeme[TObservation, TToken, TTokenRole]{},
 			fmt.Errorf("invalid token at %d", session.position)
 	}
 
@@ -821,6 +828,7 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken comparable](
 		session.currentColumn,
 		session.newlineDetector,
 		session.tokenNumber,
+		tokenRole,
 	)
 
 	session.tokenNumber++
@@ -838,11 +846,11 @@ Equivalent to calling LexerConsume repeatedly, but uses a shared scanning pass.
 
 If EOF is encountered early, an EOF lexeme is included and consumption stops.
 */
-func LexerConsumeRange[TObservation cmp.Ordered, TState, TToken comparable](
-	lexer *Lexer[TObservation, TState, TToken],
+func LexerConsumeRange[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *LexerSession[TObservation, TState],
 	count int,
-) ([]Lexeme[TObservation, TToken], error) {
+) ([]Lexeme[TObservation, TToken, TTokenRole], error) {
 
 	if count < 0 {
 		return nil, fmt.Errorf("count must be >= 0")
@@ -891,20 +899,20 @@ Use cases:
 - Predictive parsing
 - Grammar lookahead
 */
-func LexerPeek[TObservation cmp.Ordered, TState, TToken comparable](
-	lexer *Lexer[TObservation, TState, TToken],
+func LexerPeek[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *LexerSession[TObservation, TState],
 	n int,
-) (Lexeme[TObservation, TToken], error) {
+) (Lexeme[TObservation, TToken, TTokenRole], error) {
 
 	if n < 0 {
-		return Lexeme[TObservation, TToken]{},
+		return Lexeme[TObservation, TToken, TTokenRole]{},
 			fmt.Errorf("peek index must be >= 0")
 	}
 
 	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
 	if err != nil {
-		return Lexeme[TObservation, TToken]{}, err
+		return Lexeme[TObservation, TToken, TTokenRole]{}, err
 	}
 
 	st := scanState{
@@ -914,11 +922,11 @@ func LexerPeek[TObservation cmp.Ordered, TState, TToken comparable](
 		tokenNum: session.tokenNumber,
 	}
 
-	var lex Lexeme[TObservation, TToken]
+	var lex Lexeme[TObservation, TToken, TTokenRole]
 
 	for i := 0; i <= n; i++ {
 		if st.pos >= len(session.input) {
-			lex = lexemeEOF[TObservation](
+			lex = lexemeEOF[TObservation, TToken, TTokenRole](
 				lexer.eofToken,
 				st.pos,
 				st.line,
@@ -928,14 +936,14 @@ func LexerPeek[TObservation cmp.Ordered, TState, TToken comparable](
 			break
 		}
 
-		token, end, ok := scanLongestMatch(
+		token, tokenRole, end, ok := scanLongestMatch(
 			dfa,
 			session.input,
 			st.pos,
 			resolutionStep,
 		)
 		if !ok {
-			return Lexeme[TObservation, TToken]{},
+			return Lexeme[TObservation, TToken, TTokenRole]{},
 				fmt.Errorf("invalid token at %d", st.pos)
 		}
 
@@ -950,6 +958,7 @@ func LexerPeek[TObservation cmp.Ordered, TState, TToken comparable](
 			st.col,
 			session.newlineDetector,
 			st.tokenNum,
+			tokenRole,
 		)
 
 		scanStateAdvance(&st, raw, session.newlineDetector)
@@ -968,11 +977,11 @@ The session state is not modified.
 
 If EOF is encountered early, an EOF lexeme is included and scanning stops.
 */
-func LexerPeekRange[TObservation cmp.Ordered, TState, TToken comparable](
-	lexer *Lexer[TObservation, TState, TToken],
+func LexerPeekRange[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *LexerSession[TObservation, TState],
 	count int,
-) ([]Lexeme[TObservation, TToken], error) {
+) ([]Lexeme[TObservation, TToken, TTokenRole], error) {
 
 	if count < 0 {
 		return nil, fmt.Errorf("count must be >= 0")
@@ -1016,11 +1025,11 @@ Edge cases:
 - Advances position only if token matches
 - Error message includes expected and actual token values with position
 */
-func LexerAssertConsume[TObservation cmp.Ordered, TState, TToken comparable](
-	lexer *Lexer[TObservation, TState, TToken],
+func LexerAssertConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *LexerSession[TObservation, TState],
 	expected TToken,
-) (Lexeme[TObservation, TToken], error) {
+) (Lexeme[TObservation, TToken, TTokenRole], error) {
 
 	lex, err := LexerConsume(lexer, session)
 	if err != nil {
@@ -1060,12 +1069,12 @@ Edge cases:
 - Does not modify session position
 - Error message includes expected and actual token values with position
 */
-func LexerAssertPeek[TObservation cmp.Ordered, TState, TToken comparable](
-	lexer *Lexer[TObservation, TState, TToken],
+func LexerAssertPeek[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *LexerSession[TObservation, TState],
 	expected TToken,
 	n int,
-) (Lexeme[TObservation, TToken], error) {
+) (Lexeme[TObservation, TToken, TTokenRole], error) {
 
 	lex, err := LexerPeek(lexer, session, n)
 	if err != nil {
@@ -1087,10 +1096,10 @@ LexerConsumeStreaming consumes the next token from a streaming session.
 
 Equivalent to LexerConsume for streaming inputs.
 */
-func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken comparable](
-	lexer *Lexer[TObservation, TState, TToken],
+func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *StreamingLexerSession[TObservation, TState],
-) (Lexeme[TObservation, TToken], error) {
+) (Lexeme[TObservation, TToken, TTokenRole], error) {
 
 	if eofLexeme, atEOF := lexerCheckEOFStreaming(lexer, session); atEOF {
 		return eofLexeme, nil
@@ -1098,17 +1107,17 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken comparable](
 
 	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
 	if err != nil {
-		return Lexeme[TObservation, TToken]{}, err
+		return Lexeme[TObservation, TToken, TTokenRole]{}, err
 	}
 
 	next := streamingNextFn(session)
 
-	token, endRel, found, err := scanCore(dfa, next, resolutionStep)
+	token, role, endRel, found, err := scanCore(dfa, next, resolutionStep)
 	if err != nil {
-		return Lexeme[TObservation, TToken]{}, err
+		return Lexeme[TObservation, TToken, TTokenRole]{}, err
 	}
 	if !found {
-		return Lexeme[TObservation, TToken]{},
+		return Lexeme[TObservation, TToken, TTokenRole]{},
 			fmt.Errorf("invalid token at %d", session.absPos)
 	}
 
@@ -1123,6 +1132,7 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken comparable](
 		session.currentColumn,
 		session.newlineDetector,
 		session.tokenNumber,
+		role,
 	)
 
 	// advance real streaming session
@@ -1144,11 +1154,11 @@ from a streaming session.
 Equivalent to repeated LexerConsumeStreaming calls but uses
 a single scanning pass.
 */
-func LexerConsumeRangeStreaming[TObservation cmp.Ordered, TState, TToken comparable](
-	lexer *Lexer[TObservation, TState, TToken],
+func LexerConsumeRangeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *StreamingLexerSession[TObservation, TState],
 	count int,
-) ([]Lexeme[TObservation, TToken], error) {
+) ([]Lexeme[TObservation, TToken, TTokenRole], error) {
 
 	if count < 0 {
 		return nil, fmt.Errorf("count must be >= 0")
@@ -1190,20 +1200,20 @@ PeekStreaming(0) returns the current token.
 
 This function does NOT consume input.
 */
-func LexerPeekStreaming[TObservation cmp.Ordered, TState, TToken comparable](
-	lexer *Lexer[TObservation, TState, TToken],
+func LexerPeekStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *StreamingLexerSession[TObservation, TState],
 	n int,
-) (Lexeme[TObservation, TToken], error) {
+) (Lexeme[TObservation, TToken, TTokenRole], error) {
 
 	if n < 0 {
-		return Lexeme[TObservation, TToken]{},
+		return Lexeme[TObservation, TToken, TTokenRole]{},
 			fmt.Errorf("peek index must be >= 0")
 	}
 
 	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
 	if err != nil {
-		return Lexeme[TObservation, TToken]{}, err
+		return Lexeme[TObservation, TToken, TTokenRole]{}, err
 	}
 
 	st := scanState{
@@ -1216,11 +1226,11 @@ func LexerPeekStreaming[TObservation cmp.Ordered, TState, TToken comparable](
 	buffer := session.buffer
 	next := streamingNextFn(session)
 
-	var lex Lexeme[TObservation, TToken]
+	var lex Lexeme[TObservation, TToken, TTokenRole]
 
 	for i := 0; i <= n; i++ {
 		if session.eof && len(buffer) == 0 {
-			lex = lexemeEOF[TObservation](
+			lex = lexemeEOF[TObservation, TToken, TTokenRole](
 				lexer.eofToken,
 				st.pos,
 				st.line,
@@ -1230,12 +1240,12 @@ func LexerPeekStreaming[TObservation cmp.Ordered, TState, TToken comparable](
 			break
 		}
 
-		token, endRel, found, err := scanCore(dfa, next, resolutionStep)
+		token, role, endRel, found, err := scanCore(dfa, next, resolutionStep)
 		if err != nil {
-			return Lexeme[TObservation, TToken]{}, err
+			return Lexeme[TObservation, TToken, TTokenRole]{}, err
 		}
 		if !found {
-			return Lexeme[TObservation, TToken]{},
+			return Lexeme[TObservation, TToken, TTokenRole]{},
 				fmt.Errorf("invalid token at %d", st.pos)
 		}
 
@@ -1250,6 +1260,7 @@ func LexerPeekStreaming[TObservation cmp.Ordered, TState, TToken comparable](
 			st.col,
 			session.newlineDetector,
 			st.tokenNum,
+			role,
 		)
 
 		scanStateAdvance(&st, raw, session.newlineDetector)
@@ -1269,11 +1280,11 @@ Buffer growth is bounded by maxBufferedObservations.
 
 The session state is not modified.
 */
-func LexerPeekRangeStreaming[TObservation cmp.Ordered, TState, TToken comparable](
-	lexer *Lexer[TObservation, TState, TToken],
+func LexerPeekRangeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *StreamingLexerSession[TObservation, TState],
 	count int,
-) ([]Lexeme[TObservation, TToken], error) {
+) ([]Lexeme[TObservation, TToken, TTokenRole], error) {
 
 	if count < 0 {
 		return nil, fmt.Errorf("count must be >= 0")
@@ -1319,11 +1330,11 @@ Edge cases:
 - Advances stream position only if token matches
 - Error message includes expected and actual token values with absolute position
 */
-func LexerAssertConsumeStreaming[TObservation cmp.Ordered, TState, TToken comparable](
-	lexer *Lexer[TObservation, TState, TToken],
+func LexerAssertConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *StreamingLexerSession[TObservation, TState],
 	expected TToken,
-) (Lexeme[TObservation, TToken], error) {
+) (Lexeme[TObservation, TToken, TTokenRole], error) {
 
 	lex, err := LexerConsumeStreaming(lexer, session)
 	if err != nil {
@@ -1367,12 +1378,12 @@ Edge cases:
 - Does not modify session position
 - Error message includes expected and actual token values with absolute position
 */
-func LexerAssertPeekStreaming[TObservation cmp.Ordered, TState, TToken comparable](
-	lexer *Lexer[TObservation, TState, TToken],
+func LexerAssertPeekStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *StreamingLexerSession[TObservation, TState],
 	expected TToken,
 	n int,
-) (Lexeme[TObservation, TToken], error) {
+) (Lexeme[TObservation, TToken, TTokenRole], error) {
 
 	lex, err := LexerPeekStreaming(lexer, session, n)
 	if err != nil {
@@ -1393,10 +1404,10 @@ func LexerAssertPeekStreaming[TObservation cmp.Ordered, TState, TToken comparabl
 
 // ------------------------------------------------------ PRIVATE HELPERS
 
-func lexerGetDFAAndResolution[TObservation cmp.Ordered, TState, TToken comparable](
-	lexer *Lexer[TObservation, TState, TToken],
+func lexerGetDFAAndResolution[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	state TState,
-) (*autarch.DFA[TObservation, TokenOutcome[TToken]], TokenResolutionStepFn[TToken], error) {
+) (*autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]], TokenResolutionStepFn[TToken], error) {
 
 	dfa, ok := lexer.ruleSets[state]
 	if !ok {
@@ -1411,18 +1422,19 @@ func lexerGetDFAAndResolution[TObservation cmp.Ordered, TState, TToken comparabl
 	return dfa, resolutionStep, nil
 }
 
-func lexemeBuild[TObservation cmp.Ordered, TToken comparable](
+func lexemeBuild[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	token TToken,
 	raw []TObservation,
 	start, end int,
 	startLine, startColumn int,
 	newlineDetector NewlineDetector[TObservation],
 	tokenNumber int,
-) Lexeme[TObservation, TToken] {
+	role TTokenRole,
+) Lexeme[TObservation, TToken, TTokenRole] {
 
 	endLine, endColumn := computePositionFromSlice(raw, newlineDetector, startLine, startColumn)
 
-	return Lexeme[TObservation, TToken]{
+	return Lexeme[TObservation, TToken, TTokenRole]{
 		Token:       token,
 		Raw:         raw,
 		Start:       start,
@@ -1432,6 +1444,7 @@ func lexemeBuild[TObservation cmp.Ordered, TToken comparable](
 		EndLine:     endLine,
 		EndColumn:   endColumn,
 		TokenNumber: tokenNumber,
+		Role:        role,
 	}
 }
 
@@ -1454,14 +1467,14 @@ func scanStateAdvance[TObservation cmp.Ordered](
 	st.tokenNum++
 }
 
-func lexemeEOF[TObservation cmp.Ordered, TToken comparable](
+func lexemeEOF[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	eofToken TToken,
 	pos int,
 	line int,
 	col int,
 	tokenNum int,
-) Lexeme[TObservation, TToken] {
-	return Lexeme[TObservation, TToken]{
+) Lexeme[TObservation, TToken, TTokenRole] {
+	return Lexeme[TObservation, TToken, TTokenRole]{
 		Token:       eofToken,
 		Raw:         nil,
 		Start:       pos,
@@ -1511,13 +1524,13 @@ func computePositionFromSlice[TObservation cmp.Ordered](
 	return line, column
 }
 
-func lexerCheckEOF[TObservation cmp.Ordered, TState, TToken comparable](
-	lexer *Lexer[TObservation, TState, TToken],
+func lexerCheckEOF[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *LexerSession[TObservation, TState],
-) (Lexeme[TObservation, TToken], bool) {
+) (Lexeme[TObservation, TToken, TTokenRole], bool) {
 	if session.position >= len(session.input) {
 		pos := len(session.input)
-		return Lexeme[TObservation, TToken]{
+		return Lexeme[TObservation, TToken, TTokenRole]{
 			Token:       lexer.eofToken,
 			Raw:         nil,
 			Start:       pos,
@@ -1529,16 +1542,16 @@ func lexerCheckEOF[TObservation cmp.Ordered, TState, TToken comparable](
 			TokenNumber: session.tokenNumber,
 		}, true
 	}
-	var zero Lexeme[TObservation, TToken]
+	var zero Lexeme[TObservation, TToken, TTokenRole]
 	return zero, false
 }
 
-func scanLongestMatch[TObservation cmp.Ordered, TToken comparable](
-	dfa *autarch.DFA[TObservation, TokenOutcome[TToken]],
+func scanLongestMatch[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+	dfa *autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]],
 	input []TObservation,
 	start int,
 	resolutionStep TokenResolutionStepFn[TToken],
-) (token TToken, end int, ok bool) {
+) (token TToken, role TTokenRole, end int, ok bool) {
 
 	next := func(i int) (TObservation, bool, error) {
 		pos := start + i
@@ -1549,33 +1562,36 @@ func scanLongestMatch[TObservation cmp.Ordered, TToken comparable](
 		return input[pos], true, nil
 	}
 
-	token, endRel, found, _ := scanCore(dfa, next, resolutionStep)
+	token, role, endRel, found, _ := scanCore(dfa, next, resolutionStep)
 
 	if !found {
 		var zero TToken
-		return zero, start, false
+		var zeroRole TTokenRole
+		return zero, zeroRole, start, false
 	}
 
-	return token, start + endRel, true
+	return token, role, start + endRel, true
 }
 
-func scanCore[TObservation cmp.Ordered, TToken comparable](
-	dfa *autarch.DFA[TObservation, TokenOutcome[TToken]],
-	nextObs func(int) (obs TObservation, ok bool, err error),
+func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+	dfa *autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]],
+	nextObservation func(int) (obs TObservation, ok bool, err error),
 	resolutionStep TokenResolutionStepFn[TToken],
-) (bestToken TToken, bestEnd int, found bool, err error) {
+) (bestToken TToken, role TTokenRole, bestEnd int, found bool, err error) {
 
 	cursor := autarch.DFACursorGet(dfa)
 	state := uint64(0)
 
 	bestPriority := 0
 	pos := 0
+	var bestRole TTokenRole
 
 	for {
-		obs, hasObs, err := nextObs(pos)
+		obs, hasObs, err := nextObservation(pos)
 		if err != nil {
 			var zero TToken
-			return zero, 0, false, err
+			var zeroRole TTokenRole
+			return zero, zeroRole, 0, false, err
 		}
 		if !hasObs {
 			break
@@ -1602,6 +1618,7 @@ func scanCore[TObservation cmp.Ordered, TToken comparable](
 				bestToken = newBest
 				bestEnd = newEnd
 				bestPriority = outcome.Priority
+				bestRole = outcome.TokenRole
 				found = true
 			}
 		}
@@ -1609,14 +1626,14 @@ func scanCore[TObservation cmp.Ordered, TToken comparable](
 		pos++
 	}
 
-	return bestToken, bestEnd, found, nil
+	return bestToken, bestRole, bestEnd, found, nil
 }
 
-func lexingRulesetCompile[TObservation cmp.Ordered, TToken comparable](
-	ruleset LexingRuleset[TObservation, TToken],
+func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+	ruleset LexingRuleset[TObservation, TToken, TTokenRole],
 	scratchAllocFn memarch.AllocationFn,
 	dfaAllocFn memarch.AllocationFn,
-) *autarch.DFA[TObservation, TokenOutcome[TToken]] {
+) *autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]] {
 	ctx := pattern.RegulaCreateSharedCompilationContext[TObservation]()
 
 	for _, rule := range ruleset.precompiledRules {
@@ -1626,7 +1643,7 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken comparable](
 	ctx.BuildAlphabet()
 
 	initialRule := ruleset.precompiledRules[0]
-	initialOutcome := TokenOutcome[TToken]{Token: initialRule.token, Priority: initialRule.priority}
+	initialOutcome := TokenOutcome[TToken, TTokenRole]{Token: initialRule.token, Priority: initialRule.priority, TokenRole: initialRule.role}
 	nfa := pattern.RegulaCompileToNFAWithBuilder(scratchAllocFn, initialRule.pattern, ctx, initialOutcome)
 
 	for i, rule := range ruleset.precompiledRules {
@@ -1634,7 +1651,7 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken comparable](
 			continue
 		}
 
-		ruleOutcome := TokenOutcome[TToken]{Token: rule.token, Priority: rule.priority}
+		ruleOutcome := TokenOutcome[TToken, TTokenRole]{Token: rule.token, Priority: rule.priority, TokenRole: rule.role}
 		ruleNFA := pattern.RegulaCompileToNFAWithBuilder(scratchAllocFn, rule.pattern, ctx, ruleOutcome)
 		nfa = autarch.NFAMergeOr(nfa, ruleNFA, scratchAllocFn)
 	}
@@ -1644,13 +1661,13 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken comparable](
 	return minimizedDFA
 }
 
-func lexerCheckEOFStreaming[TObservation cmp.Ordered, TState, TToken comparable](
-	lexer *Lexer[TObservation, TState, TToken],
+func lexerCheckEOFStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *StreamingLexerSession[TObservation, TState],
-) (Lexeme[TObservation, TToken], bool) {
+) (Lexeme[TObservation, TToken, TTokenRole], bool) {
 	if session.eof && len(session.buffer) == 0 {
 		pos := session.absPos
-		return Lexeme[TObservation, TToken]{
+		return Lexeme[TObservation, TToken, TTokenRole]{
 			Token:       lexer.eofToken,
 			Raw:         nil,
 			Start:       pos,
@@ -1662,7 +1679,7 @@ func lexerCheckEOFStreaming[TObservation cmp.Ordered, TState, TToken comparable]
 			TokenNumber: session.tokenNumber,
 		}, true
 	}
-	var zero Lexeme[TObservation, TToken]
+	var zero Lexeme[TObservation, TToken, TTokenRole]
 	return zero, false
 }
 
@@ -1730,14 +1747,14 @@ func streamingMaybeCompact[TObservation cmp.Ordered, TState comparable](session 
 	}
 }
 
-func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken comparable](
-	lexer *Lexer[TObservation, TState, TToken],
+func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	ctx scannerContext[TObservation],
 	state TState,
 	newlineDetector NewlineDetector[TObservation],
 	startLine, startCol, startToken int,
 	count int,
-) ([]Lexeme[TObservation, TToken], error) {
+) ([]Lexeme[TObservation, TToken, TTokenRole], error) {
 
 	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, state)
 	if err != nil {
@@ -1751,11 +1768,11 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken comparable](
 		tokenNum: startToken,
 	}
 
-	out := make([]Lexeme[TObservation, TToken], 0, count)
+	out := make([]Lexeme[TObservation, TToken, TTokenRole], 0, count)
 
 	for i := 0; i < count; i++ {
 		if ctx.atEOF() {
-			out = append(out, lexemeEOF[TObservation](
+			out = append(out, lexemeEOF[TObservation, TToken, TTokenRole](
 				lexer.eofToken,
 				st.pos,
 				st.line,
@@ -1765,7 +1782,7 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken comparable](
 			break
 		}
 
-		token, raw, found, err := scanOne(ctx, dfa, resolutionStep)
+		token, tokenRole, raw, found, err := scanOne(ctx, dfa, resolutionStep)
 		if err != nil || !found {
 			return nil, fmt.Errorf("invalid token at %d", st.pos)
 		}
@@ -1779,6 +1796,7 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken comparable](
 			st.col,
 			newlineDetector,
 			st.tokenNum,
+			tokenRole,
 		)
 
 		out = append(out, lex)
@@ -1791,19 +1809,19 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken comparable](
 	return out, nil
 }
 
-func scanOne[TObservation cmp.Ordered, TToken comparable](
+func scanOne[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	ctx scannerContext[TObservation],
-	dfa *autarch.DFA[TObservation, TokenOutcome[TToken]],
+	dfa *autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]],
 	resolutionStep TokenResolutionStepFn[TToken],
-) (token TToken, raw []TObservation, found bool, err error) {
+) (token TToken, tokenRole TTokenRole, raw []TObservation, found bool, err error) {
 
-	token, endRel, found, err := scanCore(dfa, ctx.next, resolutionStep)
+	token, role, endRel, found, err := scanCore(dfa, ctx.next, resolutionStep)
 	if err != nil || !found {
-		return token, nil, found, err
+		return token, role, nil, found, err
 	}
 
 	raw = ctx.slice(0, endRel)
-	return token, raw, true, nil
+	return token, role, raw, true, nil
 }
 
 type scannerContext[TObservation cmp.Ordered] struct {
