@@ -910,61 +910,26 @@ func LexerPeek[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 			fmt.Errorf("peek index must be >= 0")
 	}
 
-	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
+	// Simulated scanner context (does NOT mutate session)
+	ctx := scannerFromSliceSimulated(session)
+
+	// We need n+1 tokens to get the nth lookahead
+	lexemes, err := lexerPeekRangeCore(
+		lexer,
+		ctx,
+		session.currentState,
+		session.newlineDetector,
+		session.currentLine,
+		session.currentColumn,
+		session.tokenNumber,
+		n+1,
+	)
 	if err != nil {
 		return Lexeme[TObservation, TToken, TTokenRole]{}, err
 	}
 
-	st := scanState{
-		pos:      session.position,
-		line:     session.currentLine,
-		col:      session.currentColumn,
-		tokenNum: session.tokenNumber,
-	}
-
-	var lex Lexeme[TObservation, TToken, TTokenRole]
-
-	for i := 0; i <= n; i++ {
-		if st.pos >= len(session.input) {
-			lex = lexemeEOF[TObservation, TToken, TTokenRole](
-				lexer.eofToken,
-				st.pos,
-				st.line,
-				st.col,
-				st.tokenNum,
-			)
-			break
-		}
-
-		token, tokenRole, end, ok := scanLongestMatch(
-			dfa,
-			session.input,
-			st.pos,
-			resolutionStep,
-		)
-		if !ok {
-			return Lexeme[TObservation, TToken, TTokenRole]{},
-				fmt.Errorf("invalid token at %d", st.pos)
-		}
-
-		raw := session.input[st.pos:end]
-
-		lex = lexemeBuild(
-			token,
-			raw,
-			st.pos,
-			end,
-			st.line,
-			st.col,
-			session.newlineDetector,
-			st.tokenNum,
-			tokenRole,
-		)
-
-		scanStateAdvance(&st, raw, session.newlineDetector)
-	}
-
-	return lex, nil
+	// The last element is the nth lookahead token
+	return lexemes[len(lexemes)-1], nil
 }
 
 /*
@@ -1211,65 +1176,21 @@ func LexerPeekStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 			fmt.Errorf("peek index must be >= 0")
 	}
 
-	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
+	lexemes, err := LexerPeekRangeStreaming(
+		lexer,
+		session,
+		n+1,
+	)
 	if err != nil {
 		return Lexeme[TObservation, TToken, TTokenRole]{}, err
 	}
 
-	st := scanState{
-		pos:      session.absPos,
-		line:     session.currentLine,
-		col:      session.currentColumn,
-		tokenNum: session.tokenNumber,
+	if n >= len(lexemes) {
+		return Lexeme[TObservation, TToken, TTokenRole]{},
+			fmt.Errorf("peek out of range")
 	}
 
-	buffer := session.buffer
-	next := streamingNextFn(session)
-
-	var lex Lexeme[TObservation, TToken, TTokenRole]
-
-	for i := 0; i <= n; i++ {
-		if session.eof && len(buffer) == 0 {
-			lex = lexemeEOF[TObservation, TToken, TTokenRole](
-				lexer.eofToken,
-				st.pos,
-				st.line,
-				st.col,
-				st.tokenNum,
-			)
-			break
-		}
-
-		token, role, endRel, found, err := scanCore(dfa, next, resolutionStep)
-		if err != nil {
-			return Lexeme[TObservation, TToken, TTokenRole]{}, err
-		}
-		if !found {
-			return Lexeme[TObservation, TToken, TTokenRole]{},
-				fmt.Errorf("invalid token at %d", st.pos)
-		}
-
-		raw := buffer[:endRel]
-
-		lex = lexemeBuild(
-			token,
-			raw,
-			st.pos,
-			st.pos+endRel,
-			st.line,
-			st.col,
-			session.newlineDetector,
-			st.tokenNum,
-			role,
-		)
-
-		scanStateAdvance(&st, raw, session.newlineDetector)
-
-		buffer = buffer[endRel:]
-		session.buffer = buffer
-	}
-
-	return lex, nil
+	return lexemes[n], nil
 }
 
 /*
