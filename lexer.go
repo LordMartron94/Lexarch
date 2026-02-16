@@ -988,7 +988,7 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 		return session.input[pos], true, nil
 	}
 
-	token, tokenRole, endRel, found, lexErr := scanCore(dfa, next, resolutionStep)
+	token, tokenRole, endRel, found, lexErr := scanCore(dfa, next, resolutionStep, true)
 
 	if lexErr != nil {
 		lexErr.Position = session.position + lexErr.Position
@@ -1129,8 +1129,18 @@ func LexerPeek[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 		return Lexeme[TObservation, TToken, TTokenRole]{}, lexErrAsError(lexer, err)
 	}
 
-	// The last element is the nth lookahead token
+	if len(lexemes) == 0 {
+		return lexemeEOF[TObservation, TToken, TTokenRole](
+			lexer.eofToken,
+			session.position,
+			session.currentLine,
+			session.currentColumn,
+			session.tokenNumber,
+		), nil
+	}
+
 	return lexemes[len(lexemes)-1], nil
+
 }
 
 /*
@@ -1286,7 +1296,7 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 
 	next := streamingNextFn(session)
 
-	token, role, endRel, found, lexErr := scanCore(dfa, next, resolutionStep)
+	token, role, endRel, found, lexErr := scanCore(dfa, next, resolutionStep, true)
 
 	if lexErr != nil {
 		lexErr.Position = session.absPos + lexErr.Position
@@ -1699,6 +1709,7 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	dfa *autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]],
 	nextObservation func(int) (obs TObservation, ok bool, err error),
 	resolutionStep TokenResolutionStepFn[TToken],
+	strictEOF bool,
 ) (bestToken TToken, role TTokenRole, bestEnd int, found bool, lexErr *LexingError[TObservation, TToken]) {
 
 	cursor := autarch.DFACursorGet(dfa)
@@ -1722,7 +1733,7 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 		}
 
 		if !hasObs {
-			if !found {
+			if strictEOF && !found {
 				expected := autarch.DFAPossibleTransitions(dfa, state)
 				if len(expected) > 0 {
 					return bestToken, bestRole, bestEnd, found, &LexingError[TObservation, TToken]{
@@ -1733,7 +1744,6 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 					}
 				}
 			}
-
 			break
 		}
 
@@ -1993,7 +2003,7 @@ func scanOne[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	resolutionStep TokenResolutionStepFn[TToken],
 ) (token TToken, tokenRole TTokenRole, raw []TObservation, found bool, err *LexingError[TObservation, TToken]) {
 
-	token, role, endRel, found, lexErr := scanCore(dfa, ctx.next, resolutionStep)
+	token, role, endRel, found, lexErr := scanCore(dfa, ctx.next, resolutionStep, false)
 
 	if lexErr != nil {
 		return token, role, nil, found, lexErr
