@@ -8,6 +8,7 @@ import (
 	"memarch"
 	"memcore"
 	"memforge"
+	"sync/atomic"
 )
 
 // ------------------------------------------------------ RULES
@@ -329,6 +330,19 @@ type LexerSession[TObservation cmp.Ordered, TState comparable] struct {
 	currentLine     int // Current line number (1-indexed)
 	currentColumn   int // Current column number (1-indexed)
 	tokenNumber     int // Next token sequence number (1-indexed)
+
+	inUse atomic.Bool
+}
+
+func (s *LexerSession[TObservation, TState]) begin() {
+	if s.inUse.Load() {
+		panic("LexerSession is already in use (concurrent or re-entrant use detected)")
+	}
+	s.inUse.Store(true)
+}
+
+func (s *LexerSession[TObservation, TState]) end() {
+	s.inUse.Store(false)
 }
 
 func (s *LexerSession[TObservation, TState]) Position() int {
@@ -406,12 +420,17 @@ func (s *LexerSession[TObservation, TState]) Reset(
 	input []TObservation,
 	initialState TState,
 ) {
+	if s.inUse.Load() {
+		panic("cannot reset active lexer session")
+	}
+
 	s.input = input
 	s.currentState = initialState
 	s.position = 0
 	s.currentLine = 1
 	s.currentColumn = 1
 	s.tokenNumber = 1
+	s.end()
 }
 
 /*
@@ -481,6 +500,19 @@ type StreamingLexerSession[TObservation cmp.Ordered, TState comparable] struct {
 	currentLine     int // Current line number (1-indexed)
 	currentColumn   int // Current column number (1-indexed)
 	tokenNumber     int // Next token sequence number (1-indexed)
+
+	inUse atomic.Bool
+}
+
+func (s *StreamingLexerSession[TObservation, TState]) begin() {
+	if s.inUse.Load() {
+		panic("LexerSession is already in use (concurrent or re-entrant use detected)")
+	}
+	s.inUse.Store(true)
+}
+
+func (s *StreamingLexerSession[TObservation, TState]) end() {
+	s.inUse.Store(false)
 }
 
 func (s *StreamingLexerSession[TObservation, TState]) AbsPosition() int {
@@ -551,6 +583,10 @@ func (s *StreamingLexerSession[TObservation, TState]) Reset(
 	producer ObservationProducerFn[TObservation],
 	initialState TState,
 ) {
+	if s.inUse.Load() {
+		panic("cannot reset active lexer session")
+	}
+
 	s.producer = producer
 	s.currentState = initialState
 	s.absPos = 0
@@ -559,6 +595,7 @@ func (s *StreamingLexerSession[TObservation, TState]) Reset(
 	s.tokenNumber = 1
 	s.eof = false
 	s.buffer = s.buffer[:0]
+	s.end()
 }
 
 /*
@@ -818,6 +855,8 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *LexerSession[TObservation, TState],
 ) (Lexeme[TObservation, TToken, TTokenRole], error) {
+	session.begin()
+	defer session.end()
 
 	if eofLexeme, atEOF := lexerCheckEOF(lexer, session); atEOF {
 		return eofLexeme, nil
@@ -874,6 +913,8 @@ func LexerConsumeRange[TObservation cmp.Ordered, TState, TToken, TTokenRole comp
 	session *LexerSession[TObservation, TState],
 	count int,
 ) ([]Lexeme[TObservation, TToken, TTokenRole], error) {
+	session.begin()
+	defer session.end()
 
 	if count < 0 {
 		return nil, fmt.Errorf("count must be >= 0")
@@ -927,6 +968,8 @@ func LexerPeek[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	session *LexerSession[TObservation, TState],
 	n int,
 ) (Lexeme[TObservation, TToken, TTokenRole], error) {
+	session.begin()
+	defer session.end()
 
 	if n < 0 {
 		return Lexeme[TObservation, TToken, TTokenRole]{},
@@ -970,6 +1013,8 @@ func LexerPeekRange[TObservation cmp.Ordered, TState, TToken, TTokenRole compara
 	session *LexerSession[TObservation, TState],
 	count int,
 ) ([]Lexeme[TObservation, TToken, TTokenRole], error) {
+	session.begin()
+	defer session.end()
 
 	if count < 0 {
 		return nil, fmt.Errorf("count must be >= 0")
@@ -1088,6 +1133,8 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *StreamingLexerSession[TObservation, TState],
 ) (Lexeme[TObservation, TToken, TTokenRole], error) {
+	session.begin()
+	defer session.end()
 
 	if eofLexeme, atEOF := lexerCheckEOFStreaming(lexer, session); atEOF {
 		return eofLexeme, nil
@@ -1147,6 +1194,8 @@ func LexerConsumeRangeStreaming[TObservation cmp.Ordered, TState, TToken, TToken
 	session *StreamingLexerSession[TObservation, TState],
 	count int,
 ) ([]Lexeme[TObservation, TToken, TTokenRole], error) {
+	session.begin()
+	defer session.end()
 
 	if count < 0 {
 		return nil, fmt.Errorf("count must be >= 0")
@@ -1193,7 +1242,6 @@ func LexerPeekStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 	session *StreamingLexerSession[TObservation, TState],
 	n int,
 ) (Lexeme[TObservation, TToken, TTokenRole], error) {
-
 	if n < 0 {
 		return Lexeme[TObservation, TToken, TTokenRole]{},
 			fmt.Errorf("peek index must be >= 0")
@@ -1229,6 +1277,8 @@ func LexerPeekRangeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRol
 	session *StreamingLexerSession[TObservation, TState],
 	count int,
 ) ([]Lexeme[TObservation, TToken, TTokenRole], error) {
+	session.begin()
+	defer session.end()
 
 	if count < 0 {
 		return nil, fmt.Errorf("count must be >= 0")
