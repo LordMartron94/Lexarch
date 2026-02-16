@@ -76,10 +76,11 @@ func (e *LexingError[TObs, TToken]) Error() string {
 
 	case LexErrUnexpectedEOF:
 		return fmt.Sprintf(
-			"unexpected EOF at line %d:%d (expected %s)",
+			"unexpected EOF at line %d:%d (expected %s) (absolute position %d)",
 			e.Line,
 			e.Column,
 			formatExpected(e.Expected, fmtObs),
+			e.Position,
 		)
 
 	case LexErrNoTransition:
@@ -990,8 +991,19 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 	token, tokenRole, endRel, found, lexErr := scanCore(dfa, next, resolutionStep)
 
 	if lexErr != nil {
-		lexErr.Line = session.currentLine
-		lexErr.Column = session.currentColumn
+		lexErr.Position = session.position + lexErr.Position
+		lexErr.Furthest = session.position + lexErr.Furthest
+
+		line, col := computePositionFromSlice(
+			session.input[:lexErr.Position],
+			session.newlineDetector,
+			1,
+			1,
+		)
+
+		lexErr.Line = line
+		lexErr.Column = col
+
 		return Lexeme[TObservation, TToken, TTokenRole]{}, lexErrAsError(lexer, lexErr)
 	}
 
@@ -1277,8 +1289,19 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 	token, role, endRel, found, lexErr := scanCore(dfa, next, resolutionStep)
 
 	if lexErr != nil {
-		lexErr.Line = session.currentLine
-		lexErr.Column = session.currentColumn
+		lexErr.Position = session.absPos + lexErr.Position
+		lexErr.Furthest = session.absPos + lexErr.Furthest
+
+		line, col := computePositionFromSlice(
+			append([]TObservation{}, session.buffer[:lexErr.Position-session.absPos]...),
+			session.newlineDetector,
+			session.currentLine,
+			session.currentColumn,
+		)
+
+		lexErr.Line = line
+		lexErr.Column = col
+
 		return Lexeme[TObservation, TToken, TTokenRole]{}, lexErrAsError(lexer, lexErr)
 	}
 
@@ -1921,8 +1944,20 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 
 		token, tokenRole, raw, found, lexErr := scanOne(ctx, dfa, resolutionStep)
 		if lexErr != nil {
-			lexErr.Line = st.line
-			lexErr.Column = st.col
+			absFailure := st.pos + lexErr.Position
+			lexErr.Position = absFailure
+			lexErr.Furthest = absFailure
+
+			line, col := computePositionFromSlice(
+				ctx.slice(0, lexErr.Position-st.pos),
+				newlineDetector,
+				st.line,
+				st.col,
+			)
+
+			lexErr.Line = line
+			lexErr.Column = col
+
 			return nil, normalizeLexErr(lexErr)
 		}
 
