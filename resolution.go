@@ -176,3 +176,51 @@ func TokenResolutionStepPriority[TToken comparable](
 
 	return bestToken, bestEnd, false
 }
+
+/*
+TokenResolutionStepLongestThenPriority performs maximal-munch resolution
+with priority used only as a tiebreaker.
+
+Selection rules:
+
+ 1. The longest matched token always wins
+ 2. If lengths are equal, higher priority wins
+ 3. Otherwise the current best remains
+
+This matches the behavior of most formal lexer generators (lex/flex, ANTLR, re2c).
+
+Use cases:
+- Safe greedy tokenization
+- Preventing sink-state dominance (whitespace, comments, classes)
+- Keyword vs identifier disambiguation
+- Production lexers
+
+Time complexity: O(1)
+Space complexity: O(1)
+
+Edge cases:
+- Longer tokens always dominate regardless of priority
+- Priority only applies to equal-length matches
+- Stable under DFA minimization
+*/
+func TokenResolutionStepLongestThenPriority[TToken comparable](
+	currentToken TToken,
+	currentEnd int,
+	currentPriority int,
+	bestToken TToken,
+	bestEnd int,
+	bestPriority int,
+) (newBestToken TToken, newBestEnd int, updated bool) {
+
+	// Longest match always wins
+	if currentEnd > bestEnd {
+		return currentToken, currentEnd, true
+	}
+
+	// If same length, use priority
+	if currentEnd == bestEnd && currentPriority > bestPriority {
+		return currentToken, currentEnd, true
+	}
+
+	return bestToken, bestEnd, false
+}
