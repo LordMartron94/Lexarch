@@ -458,10 +458,9 @@ type LexerSession[TObservation cmp.Ordered, TState comparable] struct {
 }
 
 func (s *LexerSession[TObservation, TState]) begin() {
-	if s.inUse.Load() {
+	if !s.inUse.CompareAndSwap(false, true) {
 		panic("LexerSession is already in use (concurrent or re-entrant use detected)")
 	}
-	s.inUse.Store(true)
 }
 
 func (s *LexerSession[TObservation, TState]) end() {
@@ -553,7 +552,6 @@ func (s *LexerSession[TObservation, TState]) Reset(
 	s.currentLine = 1
 	s.currentColumn = 1
 	s.tokenNumber = 1
-	s.end()
 }
 
 /*
@@ -628,10 +626,9 @@ type StreamingLexerSession[TObservation cmp.Ordered, TState comparable] struct {
 }
 
 func (s *StreamingLexerSession[TObservation, TState]) begin() {
-	if s.inUse.Load() {
+	if !s.inUse.CompareAndSwap(false, true) {
 		panic("LexerSession is already in use (concurrent or re-entrant use detected)")
 	}
-	s.inUse.Store(true)
 }
 
 func (s *StreamingLexerSession[TObservation, TState]) end() {
@@ -718,7 +715,6 @@ func (s *StreamingLexerSession[TObservation, TState]) Reset(
 	s.tokenNumber = 1
 	s.eof = false
 	s.buffer = s.buffer[:0]
-	s.end()
 }
 
 /*
