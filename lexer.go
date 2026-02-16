@@ -404,6 +404,43 @@ type Lexeme[TObservation cmp.Ordered, TToken, TTokenRole comparable] struct {
 	Role TTokenRole
 }
 
+func (l Lexeme[TObservation, TToken, TTokenRole]) DebugString(
+	fmtObs func(TObservation) string,
+	fmtToken func(TToken) string,
+	fmtRole func(TTokenRole) string,
+) string {
+
+	tokenStr := ""
+	if fmtToken != nil {
+		tokenStr = fmtToken(l.Token)
+	} else {
+		tokenStr = fmt.Sprintf("%v", l.Token)
+	}
+
+	roleStr := ""
+	if fmtRole != nil {
+		roleStr = fmtRole(l.Role)
+	} else {
+		roleStr = fmt.Sprintf("%v", l.Role)
+	}
+
+	rawStr := l.FormatRaw(fmtObs)
+
+	return fmt.Sprintf(
+		"Lexeme{token=%s, role=%s, raw=%q, span=[%d:%d], pos=(%d:%d → %d:%d), #=%d}",
+		tokenStr,
+		roleStr,
+		rawStr,
+		l.Start,
+		l.End,
+		l.StartLine,
+		l.StartColumn,
+		l.EndLine,
+		l.EndColumn,
+		l.TokenNumber,
+	)
+}
+
 func (l *Lexeme[TObservation, TToken, TTokenRole]) FormatRaw(
 	fmtObs func(TObservation) string,
 ) string {
@@ -471,8 +508,30 @@ func (s *LexerSession[TObservation, TState]) Position() int {
 	return s.position
 }
 
-func (s *LexerSession[TObservation, TState]) SetPosition(position int) {
-	s.position = position
+type LexerSessionSnapshot[TState comparable] struct {
+	State       TState
+	Position    int
+	Line        int
+	Column      int
+	TokenNumber int
+}
+
+func (s *LexerSession[TObservation, TState]) Snapshot() LexerSessionSnapshot[TState] {
+	return LexerSessionSnapshot[TState]{
+		State:       s.currentState,
+		Position:    s.position,
+		Line:        s.currentLine,
+		Column:      s.currentColumn,
+		TokenNumber: s.tokenNumber,
+	}
+}
+
+func (s *LexerSession[TObservation, TState]) RestoreSnapshot(ss LexerSessionSnapshot[TState]) {
+	s.currentState = ss.State
+	s.position = ss.Position
+	s.currentLine = ss.Line
+	s.currentColumn = ss.Column
+	s.tokenNumber = ss.TokenNumber
 }
 
 /*
@@ -639,8 +698,43 @@ func (s *StreamingLexerSession[TObservation, TState]) AbsPosition() int {
 	return s.absPos
 }
 
-func (s *StreamingLexerSession[TObservation, TState]) RestoreAbsolute(position int) {
-	s.absPos = position
+type StreamingLexerSessionSnapshot[TObservation cmp.Ordered, TState comparable] struct {
+	State       TState
+	AbsPos      int
+	Line        int
+	Column      int
+	TokenNumber int
+	EOF         bool
+	Buffer      []TObservation
+}
+
+func (s *StreamingLexerSession[TObservation, TState]) Snapshot() StreamingLexerSessionSnapshot[TObservation, TState] {
+	bufCopy := make([]TObservation, len(s.buffer))
+	copy(bufCopy, s.buffer)
+
+	return StreamingLexerSessionSnapshot[TObservation, TState]{
+		State:       s.currentState,
+		AbsPos:      s.absPos,
+		Line:        s.currentLine,
+		Column:      s.currentColumn,
+		TokenNumber: s.tokenNumber,
+		EOF:         s.eof,
+		Buffer:      bufCopy,
+	}
+}
+
+func (s *StreamingLexerSession[TObservation, TState]) RestoreSnapshot(
+	snap StreamingLexerSessionSnapshot[TObservation, TState],
+) {
+	s.currentState = snap.State
+	s.absPos = snap.AbsPos
+	s.currentLine = snap.Line
+	s.currentColumn = snap.Column
+	s.tokenNumber = snap.TokenNumber
+	s.eof = snap.EOF
+
+	s.buffer = make([]TObservation, len(snap.Buffer))
+	copy(s.buffer, snap.Buffer)
 }
 
 /*
@@ -1008,10 +1102,10 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 		lexErr.Furthest = session.position + lexErr.Furthest
 
 		line, col := computePositionFromSlice(
-			session.input[:lexErr.Position],
+			session.input[session.position:lexErr.Position],
 			session.newlineDetector,
-			1,
-			1,
+			session.currentLine,
+			session.currentColumn,
 		)
 
 		lexErr.Line = line
@@ -1029,6 +1123,13 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 	start := session.position
 	raw := copyRaw(session.input[start:end])
 
+	endLine, endCol := computePositionFromSlice(
+		raw,
+		session.newlineDetector,
+		session.currentLine,
+		session.currentColumn,
+	)
+
 	lex := lexemeBuild(
 		token,
 		raw,
@@ -1036,7 +1137,8 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 		end,
 		session.currentLine,
 		session.currentColumn,
-		session.newlineDetector,
+		endLine,
+		endCol,
 		session.tokenNumber,
 		tokenRole,
 	)
@@ -1316,7 +1418,7 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 		lexErr.Furthest = session.absPos + lexErr.Furthest
 
 		line, col := computePositionFromSlice(
-			append([]TObservation{}, session.buffer[:lexErr.Position-session.absPos]...),
+			session.buffer[:lexErr.Position-session.absPos],
 			session.newlineDetector,
 			session.currentLine,
 			session.currentColumn,
@@ -1333,6 +1435,12 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 	}
 
 	raw := copyRaw(session.buffer[:endRel])
+	endLine, endCol := computePositionFromSlice(
+		raw,
+		session.newlineDetector,
+		session.currentLine,
+		session.currentColumn,
+	)
 
 	lex := lexemeBuild(
 		token,
@@ -1341,7 +1449,8 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 		session.absPos+endRel,
 		session.currentLine,
 		session.currentColumn,
-		session.newlineDetector,
+		endLine,
+		endCol,
 		session.tokenNumber,
 		role,
 	)
@@ -1599,13 +1708,10 @@ func lexemeBuild[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	raw []TObservation,
 	start, end int,
 	startLine, startColumn int,
-	newlineDetector NewlineDetector[TObservation],
+	endLine, endColumn int,
 	tokenNumber int,
 	role TTokenRole,
 ) Lexeme[TObservation, TToken, TTokenRole] {
-
-	endLine, endColumn := computePositionFromSlice(raw, newlineDetector, startLine, startColumn)
-
 	return Lexeme[TObservation, TToken, TTokenRole]{
 		Token:       token,
 		Raw:         raw,
@@ -1618,25 +1724,13 @@ func lexemeBuild[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 		TokenNumber: tokenNumber,
 		Role:        role,
 	}
+
 }
 
 type scanState struct {
-	pos      int
 	line     int
 	col      int
 	tokenNum int
-}
-
-func scanStateAdvance[TObservation cmp.Ordered](
-	st *scanState,
-	raw []TObservation,
-	newlineDetector NewlineDetector[TObservation],
-) {
-	endLine, endCol := computePositionFromSlice(raw, newlineDetector, st.line, st.col)
-	st.line = endLine
-	st.col = endCol
-	st.pos += len(raw)
-	st.tokenNum++
 }
 
 func lexemeEOF[TObservation cmp.Ordered, TToken, TTokenRole comparable](
@@ -1750,7 +1844,7 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 				expected := autarch.DFAPossibleTransitions(dfa, state)
 				if len(expected) > 0 {
 					return bestToken, bestRole, bestEnd, found, &LexingError[TObservation, TToken]{
-						Position: furthestPos,
+						Position: pos,
 						Furthest: furthestPos,
 						Expected: expected,
 						Reason:   LexErrUnexpectedEOF,
@@ -1767,7 +1861,7 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 
 			o := obs
 			return bestToken, bestRole, bestEnd, found, &LexingError[TObservation, TToken]{
-				Position: furthestPos,
+				Position: pos,
 				Furthest: furthestPos,
 				Found:    &o,
 				Expected: expected,
@@ -1944,42 +2038,41 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 		}
 	}
 
-	st := scanState{
-		pos:      ctx.position(),
-		line:     startLine,
-		col:      startCol,
-		tokenNum: startToken,
-	}
+	line := startLine
+	col := startCol
+	tokenNum := startToken
 
 	out := make([]Lexeme[TObservation, TToken, TTokenRole], 0, count)
 
 	for i := 0; i < count; i++ {
+
 		if ctx.atEOF() {
+			pos := ctx.position()
 			out = append(out, lexemeEOF[TObservation, TToken, TTokenRole](
 				lexer.eofToken,
-				st.pos,
-				st.line,
-				st.col,
-				st.tokenNum,
+				pos,
+				line,
+				col,
+				tokenNum,
 			))
 			break
 		}
 
 		token, tokenRole, raw, found, lexErr := scanOne(ctx, dfa, resolutionStep)
 		if lexErr != nil {
-			absFailure := st.pos + lexErr.Position
+			absFailure := ctx.position() + lexErr.Position
 			lexErr.Position = absFailure
 			lexErr.Furthest = absFailure
 
-			line, col := computePositionFromSlice(
-				ctx.slice(0, lexErr.Position-st.pos),
+			errLine, errCol := computePositionFromSlice(
+				ctx.slice(0, lexErr.Position-ctx.position()),
 				newlineDetector,
-				st.line,
-				st.col,
+				line,
+				col,
 			)
 
-			lexErr.Line = line
-			lexErr.Column = col
+			lexErr.Line = errLine
+			lexErr.Column = errCol
 
 			return nil, normalizeLexErr(lexErr)
 		}
@@ -1988,23 +2081,36 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 			return nil, nil
 		}
 
+		start := ctx.position()
+
+		endLine, endCol := computePositionFromSlice(
+			raw,
+			newlineDetector,
+			line,
+			col,
+		)
+
 		lex := lexemeBuild(
 			token,
 			raw,
-			st.pos,
-			st.pos+len(raw),
-			st.line,
-			st.col,
-			newlineDetector,
-			st.tokenNum,
+			start,
+			start+len(raw),
+			line,
+			col,
+			endLine,
+			endCol,
+			tokenNum,
 			tokenRole,
 		)
 
 		out = append(out, lex)
-		scanStateAdvance(&st, raw, newlineDetector)
 
-		// simulated advance only
+		// advance single source of truth
 		ctx.advanceRaw(raw)
+
+		line = endLine
+		col = endCol
+		tokenNum++
 	}
 
 	return out, nil
