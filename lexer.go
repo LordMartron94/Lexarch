@@ -404,6 +404,23 @@ type Lexeme[TObservation cmp.Ordered, TToken, TTokenRole comparable] struct {
 	Role TTokenRole
 }
 
+func (l *Lexeme[TObservation, TToken, TTokenRole]) FormatRaw(
+	fmtObs func(TObservation) string,
+) string {
+	if len(l.Raw) == 0 {
+		return ""
+	}
+	if fmtObs == nil {
+		return fmt.Sprintf("%v", l.Raw)
+	}
+
+	var b strings.Builder
+	for _, o := range l.Raw {
+		b.WriteString(fmtObs(o))
+	}
+	return b.String()
+}
+
 /*
 LexerSession maintains the state of a lexing operation, including the current lexer state,
 input stream, and position. Multiple sessions can use the same lexer concurrently.
