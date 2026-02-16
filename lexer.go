@@ -686,7 +686,7 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 	maxDFAAllocatorMemory memcore.MemoryUnitBytes,
 ) *Lexer[TObservation, TState, TToken, TTokenRole] {
 	dfaAllocator := memforge.DynamicLinearAllocatorCreateFunction(uint64(memcore.KiloByte), func(currentCap, neededCap uint64) uint64 {
-		newSize := min(currentCap*2, neededCap)
+		newSize := max(currentCap*2, neededCap)
 
 		if newSize > uint64(maxDFAAllocatorMemory) {
 			panic("dfa allocator consumes too much memory")
