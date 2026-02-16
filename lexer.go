@@ -443,11 +443,6 @@ type ObservationProducerFn[TObservation cmp.Ordered] func(dst []TObservation) (n
 StreamingLexerSession maintains lexing state for streaming input. It mirrors LexerSession,
 but sources observations lazily via a producer callback and buffers unread observations.
 
-Important lifetime note:
-  - Lexeme.Raw returned by LexerConsumeStreaming / LexerPeekStreaming is a view into the
-    session’s internal buffer and is only guaranteed to remain stable until the next
-    call that may compact the buffer. If you need to retain Raw long-term, copy it.
-
 Use cases:
 - Tokenizing large inputs without holding the entire input in memory
 - Online lexing while reading from a stream
@@ -844,7 +839,7 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 	}
 
 	start := session.position
-	raw := session.input[start:end]
+	raw := copyRaw(session.input[start:end])
 
 	lex := lexemeBuild(
 		token,
@@ -1113,7 +1108,7 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 			fmt.Errorf("invalid token at %d", session.absPos)
 	}
 
-	raw := session.buffer[:endRel]
+	raw := copyRaw(session.buffer[:endRel])
 
 	lex := lexemeBuild(
 		token,
@@ -1768,7 +1763,7 @@ func scanOne[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 		return token, role, nil, found, err
 	}
 
-	raw = ctx.slice(0, endRel)
+	raw = copyRaw(ctx.slice(0, endRel))
 	return token, role, raw, true, nil
 }
 
@@ -1926,4 +1921,10 @@ func scannerFromStreamingSimulated[TObservation cmp.Ordered, TState comparable](
 			buffer = buffer[n:]
 		},
 	}
+}
+
+func copyRaw[T any](src []T) []T {
+	dst := make([]T, len(src))
+	copy(dst, src)
+	return dst
 }
