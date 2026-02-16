@@ -8,7 +8,112 @@ import (
 	"memarch"
 	"memcore"
 	"memforge"
+	"runtime"
+	"strings"
 	"sync/atomic"
+)
+
+// ------------------------------------------------------ ERRORS
+
+type ObservationFormatter[TObservation any] func(obs TObservation) string
+
+type LexingError[TObservation cmp.Ordered, TToken comparable] struct {
+	Position int
+
+	Line   int
+	Column int
+
+	// Furthest DFA progress
+	Furthest int
+
+	// What was seen (if any)
+	Found *TObservation
+
+	// What transitions were possible
+	Expected []TObservation
+
+	// Best partial matches (by priority / length)
+	Candidates []TToken
+
+	Reason LexingErrorReason
+
+	Formatter ObservationFormatter[TObservation]
+}
+
+func formatExpected[T cmp.Ordered](
+	list []T,
+	fmtObs func(T) string,
+) string {
+	if len(list) == 0 {
+		return "<none>"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("[")
+
+	for i, v := range list {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteString(fmtObs(v))
+	}
+
+	sb.WriteString("]")
+	return sb.String()
+}
+
+func (e *LexingError[TObs, TToken]) Error() string {
+	if e == nil {
+		return "<nil lexing error>"
+	}
+
+	fmtObs := e.Formatter
+	if fmtObs == nil {
+		fmtObs = func(o TObs) string { return fmt.Sprintf("%v", o) }
+	}
+
+	switch e.Reason {
+
+	case LexErrUnexpectedEOF:
+		return fmt.Sprintf(
+			"unexpected EOF at line %d:%d (expected %s)",
+			e.Line,
+			e.Column,
+			formatExpected(e.Expected, fmtObs),
+		)
+
+	case LexErrNoTransition:
+		if e.Found != nil {
+			return fmt.Sprintf(
+				"unexpected %s at line %d:%d (expected %s)",
+				fmtObs(*e.Found),
+				e.Line,
+				e.Column,
+				formatExpected(e.Expected, fmtObs),
+			)
+		}
+
+		return fmt.Sprintf(
+			"invalid input at line %d:%d (expected %s)",
+			e.Line,
+			e.Column,
+			formatExpected(e.Expected, fmtObs),
+		)
+
+	case LexErrBufferLimit:
+		return "lexer buffer limit exceeded"
+
+	default:
+		return "lexing error"
+	}
+}
+
+type LexingErrorReason int
+
+const (
+	LexErrNoTransition LexingErrorReason = iota
+	LexErrUnexpectedEOF
+	LexErrBufferLimit
 )
 
 // ------------------------------------------------------ RULES
@@ -645,6 +750,8 @@ type Lexer[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable] stru
 	dfaAllocator memcore.MarkRaw
 	errorToken   TToken
 	eofToken     TToken
+
+	formatter ObservationFormatter[TObservation]
 }
 
 /*
@@ -684,6 +791,7 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 	eofToken TToken,
 	scratchAllocationFn memarch.AllocationFn,
 	maxDFAAllocatorMemory memcore.MemoryUnitBytes,
+	formatter ObservationFormatter[TObservation],
 ) *Lexer[TObservation, TState, TToken, TTokenRole] {
 	dfaAllocator := memforge.DynamicLinearAllocatorCreateFunction(uint64(memcore.KiloByte), func(currentCap, neededCap uint64) uint64 {
 		newSize := max(currentCap*2, neededCap)
@@ -719,6 +827,7 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 		dfaAllocator:     dfaAllocator,
 		errorToken:       errorToken,
 		eofToken:         eofToken,
+		formatter:        formatter,
 	}
 }
 
@@ -864,19 +973,33 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 
 	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
 	if err != nil {
-		return Lexeme[TObservation, TToken, TTokenRole]{}, err
+		return Lexeme[TObservation, TToken, TTokenRole]{}, &LexingError[TObservation, TToken]{
+			Reason: LexErrNoTransition,
+		}
 	}
 
-	token, tokenRole, end, ok := scanLongestMatch(
-		dfa,
-		session.input,
-		session.position,
-		resolutionStep,
-	)
-	if !ok {
-		return Lexeme[TObservation, TToken, TTokenRole]{},
-			fmt.Errorf("invalid token at %d", session.position)
+	next := func(i int) (TObservation, bool, error) {
+		pos := session.position + i
+		if pos >= len(session.input) {
+			var zero TObservation
+			return zero, false, nil
+		}
+		return session.input[pos], true, nil
 	}
+
+	token, tokenRole, endRel, found, lexErr := scanCore(dfa, next, resolutionStep)
+
+	if lexErr != nil {
+		lexErr.Line = session.currentLine
+		lexErr.Column = session.currentColumn
+		return Lexeme[TObservation, TToken, TTokenRole]{}, lexErrAsError(lexer, lexErr)
+	}
+
+	if !found {
+		return Lexeme[TObservation, TToken, TTokenRole]{}, nil
+	}
+
+	end := session.position + endRel
 
 	start := session.position
 	raw := copyRaw(session.input[start:end])
@@ -933,7 +1056,7 @@ func LexerConsumeRange[TObservation cmp.Ordered, TState, TToken, TTokenRole comp
 		count,
 	)
 	if err != nil {
-		return nil, err
+		return nil, lexErrAsError(lexer, err)
 	}
 
 	// Update real session state from last token
@@ -991,7 +1114,7 @@ func LexerPeek[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 		n+1,
 	)
 	if err != nil {
-		return Lexeme[TObservation, TToken, TTokenRole]{}, err
+		return Lexeme[TObservation, TToken, TTokenRole]{}, lexErrAsError(lexer, err)
 	}
 
 	// The last element is the nth lookahead token
@@ -1022,7 +1145,7 @@ func LexerPeekRange[TObservation cmp.Ordered, TState, TToken, TTokenRole compara
 
 	ctx := scannerFromSliceSimulated(session)
 
-	return lexerPeekRangeCore(
+	lexemes, err := lexerPeekRangeCore(
 		lexer,
 		ctx,
 		session.currentState,
@@ -1032,6 +1155,8 @@ func LexerPeekRange[TObservation cmp.Ordered, TState, TToken, TTokenRole compara
 		session.tokenNumber,
 		count,
 	)
+
+	return lexemes, lexErrAsError(lexer, err)
 }
 
 /*
@@ -1142,18 +1267,23 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 
 	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
 	if err != nil {
-		return Lexeme[TObservation, TToken, TTokenRole]{}, err
+		return Lexeme[TObservation, TToken, TTokenRole]{}, &LexingError[TObservation, TToken]{
+			Reason: LexErrNoTransition,
+		}
 	}
 
 	next := streamingNextFn(session)
 
-	token, role, endRel, found, err := scanCore(dfa, next, resolutionStep)
-	if err != nil {
-		return Lexeme[TObservation, TToken, TTokenRole]{}, err
+	token, role, endRel, found, lexErr := scanCore(dfa, next, resolutionStep)
+
+	if lexErr != nil {
+		lexErr.Line = session.currentLine
+		lexErr.Column = session.currentColumn
+		return Lexeme[TObservation, TToken, TTokenRole]{}, lexErrAsError(lexer, lexErr)
 	}
+
 	if !found {
-		return Lexeme[TObservation, TToken, TTokenRole]{},
-			fmt.Errorf("invalid token at %d", session.absPos)
+		return Lexeme[TObservation, TToken, TTokenRole]{}, nil
 	}
 
 	raw := copyRaw(session.buffer[:endRel])
@@ -1214,7 +1344,7 @@ func LexerConsumeRangeStreaming[TObservation cmp.Ordered, TState, TToken, TToken
 		count,
 	)
 	if err != nil {
-		return nil, err
+		return nil, lexErrAsError(lexer, err)
 	}
 
 	if len(lexemes) > 0 {
@@ -1286,7 +1416,7 @@ func LexerPeekRangeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRol
 
 	ctx := scannerFromStreamingSimulated(session)
 
-	return lexerPeekRangeCore(
+	lexemes, err := lexerPeekRangeCore(
 		lexer,
 		ctx,
 		session.currentState,
@@ -1296,6 +1426,8 @@ func LexerPeekRangeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRol
 		session.tokenNumber,
 		count,
 	)
+
+	return lexemes, lexErrAsError(lexer, err)
 }
 
 /*
@@ -1540,63 +1672,67 @@ func lexerCheckEOF[TObservation cmp.Ordered, TState, TToken, TTokenRole comparab
 	return zero, false
 }
 
-func scanLongestMatch[TObservation cmp.Ordered, TToken, TTokenRole comparable](
-	dfa *autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]],
-	input []TObservation,
-	start int,
-	resolutionStep TokenResolutionStepFn[TToken],
-) (token TToken, role TTokenRole, end int, ok bool) {
-
-	next := func(i int) (TObservation, bool, error) {
-		pos := start + i
-		if pos >= len(input) {
-			var zero TObservation
-			return zero, false, nil
-		}
-		return input[pos], true, nil
-	}
-
-	token, role, endRel, found, _ := scanCore(dfa, next, resolutionStep)
-
-	if !found {
-		var zero TToken
-		var zeroRole TTokenRole
-		return zero, zeroRole, start, false
-	}
-
-	return token, role, start + endRel, true
-}
-
 func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	dfa *autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]],
 	nextObservation func(int) (obs TObservation, ok bool, err error),
 	resolutionStep TokenResolutionStepFn[TToken],
-) (bestToken TToken, role TTokenRole, bestEnd int, found bool, err error) {
+) (bestToken TToken, role TTokenRole, bestEnd int, found bool, lexErr *LexingError[TObservation, TToken]) {
 
 	cursor := autarch.DFACursorGet(dfa)
+
 	state := uint64(0)
+	pos := 0
 
 	bestPriority := 0
-	pos := 0
 	var bestRole TTokenRole
+
+	// Diagnostic tracking
+	furthestPos := 0
 
 	for {
 		obs, hasObs, err := nextObservation(pos)
 		if err != nil {
-			var zero TToken
-			var zeroRole TTokenRole
-			return zero, zeroRole, 0, false, err
+			return bestToken, bestRole, bestEnd, found, &LexingError[TObservation, TToken]{
+				Position: pos,
+				Reason:   LexErrNoTransition,
+			}
 		}
+
 		if !hasObs {
+			if !found {
+				expected := autarch.DFAPossibleTransitions(dfa, state)
+				if len(expected) > 0 {
+					return bestToken, bestRole, bestEnd, found, &LexingError[TObservation, TToken]{
+						Position: furthestPos,
+						Furthest: furthestPos,
+						Expected: expected,
+						Reason:   LexErrUnexpectedEOF,
+					}
+				}
+			}
+
 			break
 		}
 
-		next := autarch.DFATransition(dfa, obs, state, cursor)
-		if next == 0 {
-			break
+		nextState := autarch.DFATransition(dfa, obs, state, cursor)
+
+		if nextState == 0 {
+			expected := autarch.DFAPossibleTransitions(dfa, state)
+
+			o := obs
+			return bestToken, bestRole, bestEnd, found, &LexingError[TObservation, TToken]{
+				Position: furthestPos,
+				Furthest: furthestPos,
+				Found:    &o,
+				Expected: expected,
+				Reason:   LexErrNoTransition,
+			}
 		}
 
-		state = next
+		state = nextState
+
+		// update furthest progress
+		furthestPos = pos + 1
 
 		if outcome, ok := autarch.DFAStateOutcome(dfa, state); ok {
 			newBest, newEnd, updated := resolutionStep(
@@ -1620,7 +1756,12 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 		pos++
 	}
 
-	return bestToken, bestRole, bestEnd, found, nil
+	// If we matched something successfully, return it
+	if found {
+		return bestToken, bestRole, bestEnd, true, nil
+	}
+
+	return bestToken, bestRole, bestEnd, false, nil
 }
 
 func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparable](
@@ -1748,11 +1889,13 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 	newlineDetector NewlineDetector[TObservation],
 	startLine, startCol, startToken int,
 	count int,
-) ([]Lexeme[TObservation, TToken, TTokenRole], error) {
+) ([]Lexeme[TObservation, TToken, TTokenRole], *LexingError[TObservation, TToken]) {
 
 	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, state)
 	if err != nil {
-		return nil, err
+		return nil, &LexingError[TObservation, TToken]{
+			Reason: LexErrNoTransition,
+		}
 	}
 
 	st := scanState{
@@ -1776,9 +1919,15 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 			break
 		}
 
-		token, tokenRole, raw, found, err := scanOne(ctx, dfa, resolutionStep)
-		if err != nil || !found {
-			return nil, fmt.Errorf("invalid token at %d", st.pos)
+		token, tokenRole, raw, found, lexErr := scanOne(ctx, dfa, resolutionStep)
+		if lexErr != nil {
+			lexErr.Line = st.line
+			lexErr.Column = st.col
+			return nil, normalizeLexErr(lexErr)
+		}
+
+		if !found {
+			return nil, nil
 		}
 
 		lex := lexemeBuild(
@@ -1807,11 +1956,16 @@ func scanOne[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	ctx scannerContext[TObservation],
 	dfa *autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]],
 	resolutionStep TokenResolutionStepFn[TToken],
-) (token TToken, tokenRole TTokenRole, raw []TObservation, found bool, err error) {
+) (token TToken, tokenRole TTokenRole, raw []TObservation, found bool, err *LexingError[TObservation, TToken]) {
 
-	token, role, endRel, found, err := scanCore(dfa, ctx.next, resolutionStep)
-	if err != nil || !found {
-		return token, role, nil, found, err
+	token, role, endRel, found, lexErr := scanCore(dfa, ctx.next, resolutionStep)
+
+	if lexErr != nil {
+		return token, role, nil, found, lexErr
+	}
+
+	if !found {
+		return token, role, nil, false, nil
 	}
 
 	raw = copyRaw(ctx.slice(0, endRel))
@@ -1978,4 +2132,43 @@ func copyRaw[T any](src []T) []T {
 	dst := make([]T, len(src))
 	copy(dst, src)
 	return dst
+}
+
+func lexErrAsError[TObs cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObs, TState, TToken, TTokenRole],
+	e *LexingError[TObs, TToken],
+) error {
+	if e == nil {
+		return nil
+	}
+	e.Formatter = lexer.formatter
+	return e
+}
+
+func normalizeLexErr[TObs cmp.Ordered, TToken comparable](e *LexingError[TObs, TToken]) *LexingError[TObs, TToken] {
+	// Fast path: real error
+	if e != nil {
+		return e
+	}
+
+	// Typed-nil detection:
+	// If this function is called, caller passed a *LexingError that was nil
+	// but wrapped as interface somewhere upstream.
+	pc, file, line, ok := runtime.Caller(1)
+	if ok {
+		fn := runtime.FuncForPC(pc)
+		fnName := "<unknown>"
+		if fn != nil {
+			fnName = fn.Name()
+		}
+
+		panic(fmt.Sprintf(
+			"BUG: typed-nil LexingError leaked from %s (%s:%d)",
+			fnName,
+			file,
+			line,
+		))
+	}
+
+	panic("BUG: typed-nil LexingError leaked (unknown caller)")
 }

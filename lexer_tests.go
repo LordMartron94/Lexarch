@@ -140,6 +140,7 @@ func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken, TokenRole], all
 			)
 		},
 		memcore.GigaByte,
+		RuneFormatterDefault(),
 	)
 
 	// Debug the DFA for the normal state with formatter
