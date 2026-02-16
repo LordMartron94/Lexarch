@@ -558,6 +558,7 @@ func (s *StreamingLexerSession[TObservation, TState]) Reset(
 	s.currentColumn = 1
 	s.tokenNumber = 1
 	s.eof = false
+	s.buffer = s.buffer[:0]
 }
 
 /*
