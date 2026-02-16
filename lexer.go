@@ -401,6 +401,19 @@ func LexerSessionCreate[TObservation cmp.Ordered, TState comparable](
 	}
 }
 
+/* Reset allows the same lexer session to be re-used again. */
+func (s *LexerSession[TObservation, TState]) Reset(
+	input []TObservation,
+	initialState TState,
+) {
+	s.input = input
+	s.currentState = initialState
+	s.position = 0
+	s.currentLine = 1
+	s.currentColumn = 1
+	s.tokenNumber = 1
+}
+
 /*
 ObservationProducerFn streams observations into dst and reports whether EOF was reached.
 
@@ -536,6 +549,20 @@ func StreamingLexerSessionCreate[TObservation cmp.Ordered, TState comparable](
 		currentColumn:           1,
 		tokenNumber:             1,
 	}
+}
+
+/* Reset allows the same lexer streaming-session to be re-used again. */
+func (s *StreamingLexerSession[TObservation, TState]) Reset(
+	producer ObservationProducerFn[TObservation],
+	initialState TState,
+) {
+	s.producer = producer
+	s.currentState = initialState
+	s.absPos = 0
+	s.currentLine = 1
+	s.currentColumn = 1
+	s.tokenNumber = 1
+	s.eof = false
 }
 
 /*
