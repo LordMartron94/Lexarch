@@ -23,6 +23,9 @@ type LexingError[TObservation cmp.Ordered, TToken comparable] struct {
 	Line   int
 	Column int
 
+	DFAState    uint64
+	HasDFAState bool
+
 	// Furthest DFA progress
 	Furthest int
 
@@ -75,30 +78,47 @@ func (e *LexingError[TObs, TToken]) Error() string {
 	switch e.Reason {
 
 	case LexErrUnexpectedEOF:
+		var stateStr string
+		if e.HasDFAState {
+			stateStr = fmt.Sprintf("%d", e.DFAState)
+		} else {
+			stateStr = "?"
+		}
+
 		return fmt.Sprintf(
-			"unexpected EOF at line %d:%d (expected %s) (absolute position %d)",
+			"unexpected EOF at line %d:%d (expected %s) (absolute position %d) [dfaState=%s]",
 			e.Line,
 			e.Column,
 			formatExpected(e.Expected, fmtObs),
 			e.Position,
+			stateStr,
 		)
 
 	case LexErrNoTransition:
+		var stateStr string
+		if e.HasDFAState {
+			stateStr = fmt.Sprintf("%d", e.DFAState)
+		} else {
+			stateStr = "?"
+		}
+
 		if e.Found != nil {
 			return fmt.Sprintf(
-				"unexpected %s at line %d:%d (expected %s)",
+				"unexpected %s at line %d:%d (expected %s) [dfaState=%s]",
 				fmtObs(*e.Found),
 				e.Line,
 				e.Column,
 				formatExpected(e.Expected, fmtObs),
+				stateStr,
 			)
 		}
 
 		return fmt.Sprintf(
-			"invalid input at line %d:%d (expected %s)",
+			"invalid input at line %d:%d (expected %s) [dfaState=%s]",
 			e.Line,
 			e.Column,
 			formatExpected(e.Expected, fmtObs),
+			stateStr,
 		)
 
 	case LexErrBufferLimit:
@@ -1095,7 +1115,7 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 		return session.input[pos], true, nil
 	}
 
-	token, tokenRole, endRel, found, lexErr := scanCore(dfa, next, resolutionStep, true)
+	token, tokenRole, endRel, found, _, lexErr := scanCore(dfa, next, resolutionStep, true)
 
 	if lexErr != nil {
 		lexErr.Position = session.position + lexErr.Position
@@ -1245,13 +1265,16 @@ func LexerPeek[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	}
 
 	if len(lexemes) == 0 {
-		return lexemeEOF[TObservation, TToken, TTokenRole](
-			lexer.eofToken,
-			session.position,
-			session.currentLine,
-			session.currentColumn,
-			session.tokenNumber,
-		), nil
+		if eofLex, atEOF := lexerCheckEOF(lexer, session); atEOF {
+			return eofLex, nil
+		}
+
+		return Lexeme[TObservation, TToken, TTokenRole]{}, lexErrAsError(lexer, &LexingError[TObservation, TToken]{
+			Position: session.position,
+			Line:     session.currentLine,
+			Column:   session.currentColumn,
+			Reason:   LexErrNoTransition,
+		})
 	}
 
 	return lexemes[len(lexemes)-1], nil
@@ -1411,7 +1434,7 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 
 	next := streamingNextFn(session)
 
-	token, role, endRel, found, lexErr := scanCore(dfa, next, resolutionStep, true)
+	token, role, endRel, found, _, lexErr := scanCore(dfa, next, resolutionStep, true)
 
 	if lexErr != nil {
 		lexErr.Position = session.absPos + lexErr.Position
@@ -1727,12 +1750,6 @@ func lexemeBuild[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 
 }
 
-type scanState struct {
-	line     int
-	col      int
-	tokenNum int
-}
-
 func lexemeEOF[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	eofToken TToken,
 	pos int,
@@ -1794,6 +1811,8 @@ func lexerCheckEOF[TObservation cmp.Ordered, TState, TToken, TTokenRole comparab
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *LexerSession[TObservation, TState],
 ) (Lexeme[TObservation, TToken, TTokenRole], bool) {
+	// fmt.Printf("Checking: pos=%05d, max=%05d; EOF? %v\n", session.position, len(session.input), session.position >= len(session.input))
+
 	if session.position >= len(session.input) {
 		pos := len(session.input)
 		return Lexeme[TObservation, TToken, TTokenRole]{
@@ -1817,7 +1836,7 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	nextObservation func(int) (obs TObservation, ok bool, err error),
 	resolutionStep TokenResolutionStepFn[TToken],
 	strictEOF bool,
-) (bestToken TToken, role TTokenRole, bestEnd int, found bool, lexErr *LexingError[TObservation, TToken]) {
+) (bestToken TToken, role TTokenRole, bestEnd int, found bool, dfaState uint64, lexErr *LexingError[TObservation, TToken]) {
 
 	cursor := autarch.DFACursorGet(dfa)
 
@@ -1833,9 +1852,11 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	for {
 		obs, hasObs, err := nextObservation(pos)
 		if err != nil {
-			return bestToken, bestRole, bestEnd, found, &LexingError[TObservation, TToken]{
-				Position: pos,
-				Reason:   LexErrNoTransition,
+			return bestToken, bestRole, bestEnd, found, state, &LexingError[TObservation, TToken]{
+				Position:    pos,
+				Reason:      LexErrNoTransition,
+				DFAState:    state,
+				HasDFAState: true,
 			}
 		}
 
@@ -1843,29 +1864,37 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 			if strictEOF && !found {
 				expected := autarch.DFAPossibleTransitions(dfa, state)
 				if len(expected) > 0 {
-					return bestToken, bestRole, bestEnd, found, &LexingError[TObservation, TToken]{
-						Position: pos,
-						Furthest: furthestPos,
-						Expected: expected,
-						Reason:   LexErrUnexpectedEOF,
+					return bestToken, bestRole, bestEnd, found, state, &LexingError[TObservation, TToken]{
+						Position:    pos,
+						Furthest:    furthestPos,
+						Expected:    expected,
+						Reason:      LexErrUnexpectedEOF,
+						DFAState:    state,
+						HasDFAState: true,
 					}
 				}
 			}
 			break
 		}
 
-		nextState := autarch.DFATransition(dfa, obs, state, cursor)
+		nextState, err := autarch.DFAStep(dfa, state, obs, cursor)
 
-		if nextState == 0 {
+		if err != nil || autarch.DFAIsDeadState(dfa, nextState) {
+			if found {
+				break
+			}
+
 			expected := autarch.DFAPossibleTransitions(dfa, state)
-
 			o := obs
-			return bestToken, bestRole, bestEnd, found, &LexingError[TObservation, TToken]{
-				Position: pos,
-				Furthest: furthestPos,
-				Found:    &o,
-				Expected: expected,
-				Reason:   LexErrNoTransition,
+
+			return bestToken, bestRole, bestEnd, found, state, &LexingError[TObservation, TToken]{
+				Position:    pos,
+				Furthest:    furthestPos,
+				Found:       &o,
+				Expected:    expected,
+				Reason:      LexErrNoTransition,
+				DFAState:    state,
+				HasDFAState: true,
 			}
 		}
 
@@ -1898,10 +1927,10 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 
 	// If we matched something successfully, return it
 	if found {
-		return bestToken, bestRole, bestEnd, true, nil
+		return bestToken, bestRole, bestEnd, true, state, nil
 	}
 
-	return bestToken, bestRole, bestEnd, false, nil
+	return bestToken, bestRole, bestEnd, false, state, nil
 }
 
 func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparable](
@@ -2058,14 +2087,20 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 			break
 		}
 
-		token, tokenRole, raw, found, lexErr := scanOne(ctx, dfa, resolutionStep)
+		token, tokenRole, raw, found, state, lexErr := scanOne(ctx, dfa, resolutionStep)
+
+		// =====================================================
+		// scanOne produced structured error
+		// =====================================================
+
 		if lexErr != nil {
-			absFailure := ctx.position() + lexErr.Position
-			lexErr.Position = absFailure
-			lexErr.Furthest = absFailure
+			base := ctx.position()
+
+			lexErr.Position = base + lexErr.Position
+			lexErr.Furthest = base + lexErr.Furthest
 
 			errLine, errCol := computePositionFromSlice(
-				ctx.slice(0, lexErr.Position-ctx.position()),
+				ctx.slice(0, lexErr.Position-base),
 				newlineDetector,
 				line,
 				col,
@@ -2074,12 +2109,46 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 			lexErr.Line = errLine
 			lexErr.Column = errCol
 
+			// Fill Found if possible
+			if !ctx.atEOF() {
+				if obs, ok, _ := ctx.next(0); ok {
+					lexErr.Found = &obs
+				}
+			}
+
 			return nil, normalizeLexErr(lexErr)
 		}
 
+		// =====================================================
+		// No transition at all
+		// =====================================================
+
 		if !found {
-			return nil, nil
+
+			if ctx.atEOF() {
+				return out, nil
+			}
+
+			var foundObs *TObservation
+			if obs, ok, _ := ctx.next(0); ok {
+				foundObs = &obs
+			}
+
+			return nil, normalizeLexErr(&LexingError[TObservation, TToken]{
+				Position:    ctx.position(),
+				Line:        line,
+				Column:      col,
+				Found:       foundObs,
+				Expected:    autarch.DFAPossibleTransitions(dfa, state),
+				Reason:      LexErrNoTransition,
+				DFAState:    state,
+				HasDFAState: true,
+			})
 		}
+
+		// =====================================================
+		// Normal token production
+		// =====================================================
 
 		start := ctx.position()
 
@@ -2105,7 +2174,7 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 
 		out = append(out, lex)
 
-		// advance single source of truth
+		// single mutation point
 		ctx.advanceRaw(raw)
 
 		line = endLine
@@ -2120,20 +2189,20 @@ func scanOne[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	ctx scannerContext[TObservation],
 	dfa *autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]],
 	resolutionStep TokenResolutionStepFn[TToken],
-) (token TToken, tokenRole TTokenRole, raw []TObservation, found bool, err *LexingError[TObservation, TToken]) {
+) (token TToken, tokenRole TTokenRole, raw []TObservation, found bool, state uint64, err *LexingError[TObservation, TToken]) {
 
-	token, role, endRel, found, lexErr := scanCore(dfa, ctx.next, resolutionStep, false)
+	token, role, endRel, found, state, lexErr := scanCore(dfa, ctx.next, resolutionStep, false)
 
 	if lexErr != nil {
-		return token, role, nil, found, lexErr
+		return token, role, nil, found, state, lexErr
 	}
 
 	if !found {
-		return token, role, nil, false, nil
+		return token, role, nil, false, state, nil
 	}
 
 	raw = copyRaw(ctx.slice(0, endRel))
-	return token, role, raw, true, nil
+	return token, role, raw, true, state, nil
 }
 
 type scannerContext[TObservation cmp.Ordered] struct {

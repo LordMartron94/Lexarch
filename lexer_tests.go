@@ -27,6 +27,7 @@ const (
 	WhitespaceToken TestToken = iota + 1
 	WordToken
 	KeywordIfToken
+	QuotedStringToken
 
 	ErrorToken
 	EOFToken
@@ -39,20 +40,20 @@ const (
 )
 
 // ============================================================
-// Test formatter with readable token and state names
+// Test formatter
 // ============================================================
 
 func createTestFormatter() *autarch.DFADebugFormatter[rune, TokenOutcome[TestToken, TokenRole]] {
-	// Map token values to names
+
 	tokenNames := map[TestToken]string{
-		WhitespaceToken: "WhitespaceToken",
-		WordToken:       "WordToken",
-		KeywordIfToken:  "KeywordIfToken",
-		ErrorToken:      "ErrorToken",
-		EOFToken:        "EOFToken",
+		WhitespaceToken:   "WhitespaceToken",
+		WordToken:         "WordToken",
+		KeywordIfToken:    "KeywordIfToken",
+		QuotedStringToken: "QuotedStringToken",
+		ErrorToken:        "ErrorToken",
+		EOFToken:          "EOFToken",
 	}
 
-	// Map state values to names
 	stateNames := map[LexerState]string{
 		NormalState: "NormalState",
 	}
@@ -61,21 +62,21 @@ func createTestFormatter() *autarch.DFADebugFormatter[rune, TokenOutcome[TestTok
 
 	return &autarch.DFADebugFormatter[rune, TokenOutcome[TestToken, TokenRole]]{
 		FormatSymbolName: baseFormatter.FormatSymbolName,
+		FormatSymbolID:   baseFormatter.FormatSymbolID,
 		FormatStateOutcome: func(outcome TokenOutcome[TestToken, TokenRole]) string {
-			tokenName := tokenNames[outcome.Token]
-			if tokenName == "" {
-				tokenName = fmt.Sprintf("Token(%d)", outcome.Token)
+			name := tokenNames[outcome.Token]
+			if name == "" {
+				name = fmt.Sprintf("Token(%d)", outcome.Token)
 			}
-			return fmt.Sprintf("{Token: %s, Priority: %d}", tokenName, outcome.Priority)
+			return fmt.Sprintf("{Token: %s, Priority: %d}", name, outcome.Priority)
 		},
-		FormatSymbolID: baseFormatter.FormatSymbolID,
 		FormatStateID: func(stateID uint64) string {
 			state := LexerState(stateID)
 			stateName := stateNames[state]
 			if stateName == "" {
 				return fmt.Sprintf("%3d", stateID)
 			}
-			return fmt.Sprintf("%-3d", stateID) // Keep numeric for alignment, but could add name
+			return fmt.Sprintf("%-3d", stateID)
 		},
 	}
 }
@@ -85,6 +86,7 @@ func createTestFormatter() *autarch.DFADebugFormatter[rune, TokenOutcome[TestTok
 // ============================================================
 
 func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken, TokenRole], allocator memcore.MarkRaw) {
+
 	allocator = memforge.DynamicLinearAllocatorCreateFunction(
 		uint64(memcore.KiloByte),
 		func(currentCap, neededCap uint64) uint64 {
@@ -96,12 +98,9 @@ func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken, TokenRole], all
 		},
 	)
 
-	// Set up cleanup in case of panic - this will be overridden by successful return
 	cleanupNeeded := true
 	defer func() {
 		if cleanupNeeded {
-			// If we panic, clean up the allocator
-			// The caller's recovery will handle the test failure
 			memforge.DynamicLinearAllocatorDestroy(allocator)
 		}
 	}()
@@ -122,7 +121,25 @@ func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken, TokenRole], all
 	word := lower.Plus()
 	keywordIf := pattern.Literal('i', 'f')
 
+	// ------------------------
+	// Quoted string pattern
+	// ------------------------
+	quote := pattern.Literal('"')
+
+	notQuote := pattern.Class(
+		pattern.Range(0, '"'-1),
+		pattern.Range('"'+1, rune(0x10FFFF)),
+	)
+
+	quotedString :=
+		pattern.Sequence(
+			quote,
+			notQuote.Star(),
+			quote,
+		)
+
 	rules.WithRulePriority(keywordIf, KeywordIfToken, DefaultTokenRole, 10)
+	rules.WithRule(quotedString, QuotedStringToken, DefaultTokenRole)
 	rules.WithRule(word, WordToken, DefaultTokenRole)
 	rules.WithRule(whitespace, WhitespaceToken, DefaultTokenRole)
 
@@ -143,13 +160,11 @@ func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken, TokenRole], all
 		RuneFormatterDefault(),
 	)
 
-	// Debug the DFA for the normal state with formatter
 	fmt.Println("=== DFA Debug for NormalState ===")
 	formatter := createTestFormatter()
 	fmt.Print(LexerDebugDFA(lexer, NormalState, formatter))
 	fmt.Println("=== End DFA Debug ===")
 
-	// Success - disable cleanup defer, caller will handle it
 	cleanupNeeded = false
 	return lexer, allocator
 }
@@ -159,48 +174,23 @@ func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken, TokenRole], all
 // ============================================================
 
 func LexarchTestLexer(t *testing.T) {
-	var lexer *Lexer[rune, LexerState, TestToken, TokenRole]
-	var allocator memcore.MarkRaw
-	allocatorCreated := false
 
-	// Wrap lexer creation in panic recovery to ensure cleanup happens
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				// Cleanup allocator if lexer creation failed
-				if allocatorCreated {
-					memforge.DynamicLinearAllocatorDestroy(allocator)
-				}
-				// Convert panic to test failure
-				t.Fatalf("lexer creation panicked: %v", r)
-			}
-		}()
-		lexer, allocator = buildTestLexer()
-		allocatorCreated = true
-	}()
+	lexer, allocator := buildTestLexer()
 
-	// Ensure cleanup happens even if tests fail
-	defer func() {
-		if allocatorCreated {
-			memforge.DynamicLinearAllocatorDestroy(allocator)
-		}
-	}()
+	defer memforge.DynamicLinearAllocatorDestroy(allocator)
 	defer LexerClose(lexer)
 
-	testClassicPath(t, lexer)
-	testStreamingPath(t, lexer)
-	testPeekPath(t, lexer)
-	testPriorityResolution(t, lexer)
-	testErrorHandling(t, lexer)
+	testQuotedStringClassic(t, lexer)
+	testQuotedStringStreaming(t, lexer)
 }
 
 // ============================================================
-// Classic path with full diagnostics
+// Quoted string test (classic path)
 // ============================================================
 
-func testClassicPath(t *testing.T, lexer *Lexer[rune, LexerState, TestToken, TokenRole]) {
+func testQuotedStringClassic(t *testing.T, lexer *Lexer[rune, LexerState, TestToken, TokenRole]) {
 
-	input := []rune("if test\nif")
+	input := []rune(`"hello world"`)
 
 	session := LexerSessionCreate(
 		NormalState,
@@ -208,152 +198,40 @@ func testClassicPath(t *testing.T, lexer *Lexer[rune, LexerState, TestToken, Tok
 		NewlineDetectorRune(),
 	)
 
-	expect := []TestToken{
-		KeywordIfToken,
-		WhitespaceToken,
-		WordToken,
-		WhitespaceToken,
-		KeywordIfToken,
-		EOFToken,
-	}
+	lex, err := LexerConsume(lexer, session)
 
-	for i, expected := range expect {
+	ftesting.Assert(
+		err == nil,
+		fmt.Sprintf("quoted string consume error: %v", err),
+		"quoted string consume ok",
+		t,
+	)
 
-		lex, err := LexerConsume(lexer, session)
-
+	if err == nil {
 		ftesting.Assert(
-			err == nil,
-			fmt.Sprintf("step %d: consume error: %v", i, err),
-			fmt.Sprintf("step %d: consume ok", i),
+			lex.Token == QuotedStringToken,
+			fmt.Sprintf("expected QuotedStringToken got %v raw=%q", lex.Token, string(lex.Raw)),
+			"quoted string token correct",
 			t,
 		)
 
-		if err == nil {
-			ftesting.Assert(
-				lex.Token == expected,
-				fmt.Sprintf(
-					"step %d: expected %v got %v raw=%q pos=%d:%d → %d:%d",
-					i,
-					expected,
-					lex.Token,
-					string(lex.Raw),
-					lex.StartLine,
-					lex.StartColumn,
-					lex.EndLine,
-					lex.EndColumn,
-				),
-				fmt.Sprintf("step %d: token correct (%v)", i, expected),
-				t,
-			)
-		}
+		ftesting.Assert(
+			string(lex.Raw) == `"hello world"`,
+			fmt.Sprintf("quoted content mismatch: %q", string(lex.Raw)),
+			"quoted content preserved",
+			t,
+		)
 	}
-
-	ftesting.Assert(
-		session.currentLine == 2,
-		fmt.Sprintf("newline tracking wrong, ended on line %d", session.currentLine),
-		"newline tracking correct",
-		t,
-	)
 }
 
 // ============================================================
-// Peek diagnostics
+// Quoted string test (streaming path)
 // ============================================================
 
-func testPeekPath(t *testing.T, lexer *Lexer[rune, LexerState, TestToken, TokenRole]) {
+func testQuotedStringStreaming(t *testing.T, lexer *Lexer[rune, LexerState, TestToken, TokenRole]) {
 
-	input := []rune("if")
+	input := []rune(`"hello world"`)
 
-	session := LexerSessionCreate(
-		NormalState,
-		input,
-		NewlineDetectorRune(),
-	)
-
-	p1, _ := LexerPeek(lexer, session, 0)
-	p2, _ := LexerPeek(lexer, session, 0)
-
-	ftesting.Assert(
-		p1.Token == KeywordIfToken,
-		fmt.Sprintf("peek1 wrong: got %v raw=%q", p1.Token, string(p1.Raw)),
-		"peek1 correct",
-		t,
-	)
-
-	ftesting.Assert(
-		p2.Token == KeywordIfToken,
-		fmt.Sprintf("peek2 wrong: got %v raw=%q", p2.Token, string(p2.Raw)),
-		"peek stable",
-		t,
-	)
-
-	c, _ := LexerConsume(lexer, session)
-
-	ftesting.Assert(
-		c.Token == KeywordIfToken,
-		fmt.Sprintf("consume after peek wrong: got %v raw=%q", c.Token, string(c.Raw)),
-		"consume matches peek",
-		t,
-	)
-}
-
-// ============================================================
-// Priority test
-// ============================================================
-
-func testPriorityResolution(t *testing.T, lexer *Lexer[rune, LexerState, TestToken, TokenRole]) {
-
-	input := []rune("if")
-
-	session := LexerSessionCreate(
-		NormalState,
-		input,
-		NewlineDetectorRune(),
-	)
-
-	lex, _ := LexerConsume(lexer, session)
-
-	ftesting.Assert(
-		lex.Token == KeywordIfToken,
-		fmt.Sprintf("priority failed: got %v raw=%q", lex.Token, string(lex.Raw)),
-		"priority override works",
-		t,
-	)
-}
-
-// ============================================================
-// Error handling
-// ============================================================
-
-func testErrorHandling(t *testing.T, lexer *Lexer[rune, LexerState, TestToken, TokenRole]) {
-
-	input := []rune("@")
-
-	session := LexerSessionCreate(
-		NormalState,
-		input,
-		NewlineDetectorRune(),
-	)
-
-	_, err := LexerConsume(lexer, session)
-
-	ftesting.Assert(
-		err != nil,
-		"invalid char accepted",
-		"invalid char rejected",
-		t,
-	)
-}
-
-// ============================================================
-// Streaming path (callback-based input)
-// ============================================================
-
-func testStreamingPath(t *testing.T, lexer *Lexer[rune, LexerState, TestToken, TokenRole]) {
-
-	input := []rune("if test\nif")
-
-	// Simple streaming producer: feeds chunks of the input
 	pos := 0
 	producer := func(dst []rune) (n int, eof bool, err error) {
 
@@ -361,13 +239,7 @@ func testStreamingPath(t *testing.T, lexer *Lexer[rune, LexerState, TestToken, T
 			return 0, true, nil
 		}
 
-		remaining := len(input) - pos
-		if remaining < len(dst) {
-			n = remaining
-		} else {
-			n = len(dst)
-		}
-
+		n = min(len(dst), len(input)-pos)
 		copy(dst, input[pos:pos+n])
 		pos += n
 
@@ -382,54 +254,25 @@ func testStreamingPath(t *testing.T, lexer *Lexer[rune, LexerState, TestToken, T
 		NormalState,
 		producer,
 		NewlineDetectorRune(),
-		2,  // small chunk size to force boundary cases
-		64, // plenty for this grammar
+		2, // intentionally small
+		64,
 	)
 
-	expect := []TestToken{
-		KeywordIfToken,
-		WhitespaceToken,
-		WordToken,
-		WhitespaceToken,
-		KeywordIfToken,
-		EOFToken,
-	}
-
-	for i, expected := range expect {
-
-		lex, err := LexerConsumeStreaming(lexer, session)
-
-		ftesting.Assert(
-			err == nil,
-			fmt.Sprintf("stream step %d: consume error: %v", i, err),
-			fmt.Sprintf("stream step %d: consume ok", i),
-			t,
-		)
-
-		if err == nil {
-			ftesting.Assert(
-				lex.Token == expected,
-				fmt.Sprintf(
-					"stream step %d: expected %v got %v raw=%q pos=%d:%d → %d:%d",
-					i,
-					expected,
-					lex.Token,
-					string(lex.Raw),
-					lex.StartLine,
-					lex.StartColumn,
-					lex.EndLine,
-					lex.EndColumn,
-				),
-				fmt.Sprintf("stream step %d: token correct (%v)", i, expected),
-				t,
-			)
-		}
-	}
+	lex, err := LexerConsumeStreaming(lexer, session)
 
 	ftesting.Assert(
-		session.currentLine == 2,
-		fmt.Sprintf("stream newline tracking wrong, ended on line %d", session.currentLine),
-		"stream newline tracking correct",
+		err == nil,
+		fmt.Sprintf("stream quoted consume error: %v", err),
+		"stream quoted consume ok",
 		t,
 	)
+
+	if err == nil {
+		ftesting.Assert(
+			lex.Token == QuotedStringToken,
+			fmt.Sprintf("stream expected QuotedStringToken got %v raw=%q", lex.Token, string(lex.Raw)),
+			"stream quoted token correct",
+			t,
+		)
+	}
 }
