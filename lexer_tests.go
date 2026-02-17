@@ -156,7 +156,10 @@ func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken, TokenRole], all
 			)
 		},
 		memcore.GigaByte,
-		RuneFormatterDefault(),
+		ObservationCTX[rune]{
+			Formatter:   RuneFormatterDefault(),
+			SuccessorFn: LexarchRuneSuccessorFn(),
+		},
 	)
 
 	fmt.Println("=== DFA Debug for NormalState ===")

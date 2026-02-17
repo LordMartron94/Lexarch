@@ -8,8 +8,11 @@ import (
 	"memarch"
 	"memcore"
 	"memforge"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
+	"unicode"
 )
 
 // ------------------------------------------------------ ERRORS
@@ -901,6 +904,22 @@ type Lexer[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable] stru
 	formatter ObservationFormatter[TObservation]
 }
 
+/* ObservationCTX encapsulates the context for observation handling. */
+type ObservationCTX[TObservation cmp.Ordered] struct {
+	Formatter   ObservationFormatter[TObservation]
+	SuccessorFn pattern.SuccessorFn[TObservation]
+}
+
+/* LexarchRuneSuccessorFn creates a successor fn for rune. */
+func LexarchRuneSuccessorFn() pattern.SuccessorFn[rune] {
+	return func(curr rune) (next rune, exists bool) {
+		if curr >= unicode.MaxRune {
+			return 0, false
+		}
+		return curr + 1, true
+	}
+}
+
 /*
 LexerCreate compiles a set of rulesets into a ready-to-use lexer. Each state's ruleset is
 compiled to a minimized DFA for efficient token recognition. The compilation process:
@@ -937,7 +956,7 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 	eofToken TToken,
 	scratchAllocationFn memarch.AllocationFn,
 	maxDFAAllocatorMemory memcore.MemoryUnitBytes,
-	formatter ObservationFormatter[TObservation],
+	observationCtx ObservationCTX[TObservation],
 ) *Lexer[TObservation, TState, TToken, TTokenRole] {
 	dfaAllocator := memforge.DynamicLinearAllocatorCreateFunction(uint64(memcore.KiloByte), func(currentCap, neededCap uint64) uint64 {
 		newSize := max(currentCap*2, neededCap)
@@ -955,7 +974,9 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 	for state, ruleset := range inputRulesets {
 		compiled := lexingRulesetCompile(ruleset, scratchAllocationFn, func(sizeBytes, alignment uint64) memcore.MarkRaw {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(dfaAllocator, sizeBytes, alignment)
-		})
+		}, func(a, b TObservation) bool {
+			return a < b
+		}, observationCtx.SuccessorFn)
 
 		lexerRulesets[state] = compiled
 
@@ -972,7 +993,7 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 		tokenResolutions: tokenResolutions,
 		dfaAllocator:     dfaAllocator,
 		eofToken:         eofToken,
-		formatter:        formatter,
+		formatter:        observationCtx.Formatter,
 	}
 }
 
@@ -1011,6 +1032,11 @@ func LexerDebugDFA[TObservation cmp.Ordered, TState, TToken, TTokenRole comparab
 	return autarch.DFADebugPrint(dfa, formatter)
 }
 
+var (
+	// Regex to extract lo and hi from the "gap:(lo,hi)" name string
+	gapRegex = regexp.MustCompile(`gap:\((.+),(.+)\)`)
+)
+
 /*
 LexerDebugFormatterCreateRune creates a default formatter for rune-based lexers that converts
 numeric symbol names to character representations and formats TokenOutcome structures.
@@ -1038,32 +1064,55 @@ Edge cases:
 - Maintains table alignment with fixed-width formatting
 */
 func LexerDebugFormatterCreateRune[TState, TToken, TTokenRole comparable]() *autarch.DFADebugFormatter[rune, TokenOutcome[TToken, TTokenRole]] {
+
+	// Helper to format a single rune beautifully
+	formatRune := func(r rune) string {
+		switch {
+		case r == '\n':
+			return "'\\n'"
+		case r == '\t':
+			return "'\\t'"
+		case r == '\r':
+			return "'\\r'"
+		case r == ' ':
+			return "SPACE"
+		case r >= 32 && r < 127:
+			return fmt.Sprintf("'%c'", r)
+		default:
+			return fmt.Sprintf("\\u%04x", r)
+		}
+	}
+
 	return &autarch.DFADebugFormatter[rune, TokenOutcome[TToken, TTokenRole]]{
-		FormatSymbolName: func(symbolID uint64, name string, observation *rune) string {
-			if observation != nil {
-				r := *observation
-				if r >= 32 && r < 127 {
-					return fmt.Sprintf("%s ('%c')", name, r)
-				} else if r == '\n' {
-					return fmt.Sprintf("%s ('\\n')", name)
-				} else if r == '\t' {
-					return fmt.Sprintf("%s ('\\t')", name)
-				} else if r == '\r' {
-					return fmt.Sprintf("%s ('\\r')", name)
-				} else {
-					return fmt.Sprintf("%s (\\u%04x)", name, r)
-				}
+		FormatSymbolName: func(symbolID uint64, def autarch.SymbolDefinition[rune]) string {
+			if def.Observation != nil {
+				return fmt.Sprintf("Lit: %s", formatRune(*def.Observation))
 			}
-			return name
+
+			matches := gapRegex.FindStringSubmatch(def.Name)
+			if len(matches) == 3 {
+				loVal, _ := strconv.ParseInt(matches[1], 10, 64)
+				hiVal, _ := strconv.ParseInt(matches[2], 10, 64)
+
+				if hiVal <= loVal+1 {
+					return fmt.Sprintf("Gap: (EMPTY) between %s and %s", formatRune(rune(loVal)), formatRune(rune(hiVal)))
+				}
+
+				return fmt.Sprintf("Gap: %s < ... < %s", formatRune(rune(loVal)), formatRune(rune(hiVal)))
+			}
+			return def.Name
 		},
+
 		FormatStateOutcome: func(outcome TokenOutcome[TToken, TTokenRole]) string {
 			return fmt.Sprintf("{Token: %v, Priority: %d}", outcome.Token, outcome.Priority)
 		},
+
 		FormatSymbolID: func(symbolID uint64) string {
-			return fmt.Sprintf("%3d", symbolID)
+			return fmt.Sprintf("%d", symbolID)
 		},
+
 		FormatStateID: func(stateID uint64) string {
-			return fmt.Sprintf("%3d", stateID)
+			return fmt.Sprintf("%d", stateID)
 		},
 	}
 }
@@ -1803,6 +1852,8 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 	ruleset LexingRuleset[TObservation, TToken, TTokenRole],
 	scratchAllocFn memarch.AllocationFn,
 	dfaAllocFn memarch.AllocationFn,
+	isLessFn func(a, b TObservation) bool,
+	successor pattern.SuccessorFn[TObservation],
 ) *autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]] {
 	ctx := pattern.RegulaCreateSharedCompilationContext[TObservation]()
 
@@ -1810,7 +1861,10 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 		ctx.CollectPattern(&rule.pattern)
 	}
 
-	ctx.BuildAlphabet()
+	ctx.BuildAlphabet(
+		isLessFn,
+		successor,
+	)
 
 	initialRule := ruleset.precompiledRules[0]
 	initialOutcome := TokenOutcome[TToken, TTokenRole]{Token: initialRule.token, Priority: initialRule.priority, TokenRole: initialRule.role}
