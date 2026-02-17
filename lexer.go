@@ -33,7 +33,7 @@ type LexingError[TObservation cmp.Ordered, TToken comparable] struct {
 	Found *TObservation
 
 	// What transitions were possible
-	Expected []TObservation
+	Expected []autarch.SymbolDefinition[TObservation]
 
 	// Best partial matches (by priority / length)
 	Candidates []TToken
@@ -43,22 +43,26 @@ type LexingError[TObservation cmp.Ordered, TToken comparable] struct {
 	Formatter ObservationFormatter[TObservation]
 }
 
-func formatExpected[T cmp.Ordered](
-	list []T,
-	fmtObs func(T) string,
+func (e *LexingError[TObservation, TToken]) formatExpected(
+	fmtObs func(TObservation) string,
 ) string {
-	if len(list) == 0 {
+	if len(e.Expected) == 0 {
 		return "<none>"
 	}
 
 	var sb strings.Builder
 	sb.WriteString("[")
 
-	for i, v := range list {
+	for i, expectedSymbol := range e.Expected {
 		if i > 0 {
 			sb.WriteString(", ")
 		}
-		sb.WriteString(fmtObs(v))
+
+		if expectedSymbol.Observation != nil {
+			sb.WriteString(fmtObs(*expectedSymbol.Observation))
+		} else {
+			sb.WriteString(expectedSymbol.Name)
+		}
 	}
 
 	sb.WriteString("]")
@@ -89,7 +93,7 @@ func (e *LexingError[TObs, TToken]) Error() string {
 			"unexpected EOF at line %d:%d (expected %s) (absolute position %d) [dfaState=%s]",
 			e.Line,
 			e.Column,
-			formatExpected(e.Expected, fmtObs),
+			e.formatExpected(fmtObs),
 			e.Position,
 			stateStr,
 		)
@@ -108,7 +112,7 @@ func (e *LexingError[TObs, TToken]) Error() string {
 				fmtObs(*e.Found),
 				e.Line,
 				e.Column,
-				formatExpected(e.Expected, fmtObs),
+				e.formatExpected(fmtObs),
 				stateStr,
 			)
 		}
@@ -117,7 +121,7 @@ func (e *LexingError[TObs, TToken]) Error() string {
 			"invalid input at line %d:%d (expected %s) [dfaState=%s]",
 			e.Line,
 			e.Column,
-			formatExpected(e.Expected, fmtObs),
+			e.formatExpected(fmtObs),
 			stateStr,
 		)
 
@@ -1814,21 +1818,50 @@ func lexerCheckEOF[TObservation cmp.Ordered, TState, TToken, TTokenRole comparab
 	// fmt.Printf("Checking: pos=%05d, max=%05d; EOF? %v\n", session.position, len(session.input), session.position >= len(session.input))
 
 	if session.position >= len(session.input) {
-		pos := len(session.input)
-		return Lexeme[TObservation, TToken, TTokenRole]{
-			Token:       lexer.eofToken,
-			Raw:         nil,
-			Start:       pos,
-			End:         pos,
-			StartLine:   session.currentLine,
-			StartColumn: session.currentColumn,
-			EndLine:     session.currentLine,
-			EndColumn:   session.currentColumn,
-			TokenNumber: session.tokenNumber,
-		}, true
+		return lexerBuildEOF[TObservation, TToken, TTokenRole](
+			lexer.eofToken,
+			len(session.input),
+			session.currentLine,
+			session.currentColumn,
+			session.tokenNumber,
+		), true
 	}
 	var zero Lexeme[TObservation, TToken, TTokenRole]
 	return zero, false
+}
+
+/* LexerBuildEOF builds an eof lexeme. */
+func LexerBuildEOF[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+	eofToken TToken,
+	pos int,
+	line int,
+	col int,
+	tokenNum int,
+) Lexeme[TObservation, TToken, TTokenRole] {
+	return lexerBuildEOF[TObservation, TToken, TTokenRole](
+		eofToken, pos, line, col, tokenNum,
+	)
+}
+
+func lexerBuildEOF[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+	eofToken TToken,
+	pos int,
+	line int,
+	col int,
+	tokenNum int,
+) Lexeme[TObservation, TToken, TTokenRole] {
+
+	return Lexeme[TObservation, TToken, TTokenRole]{
+		Token:       eofToken,
+		Raw:         nil,
+		Start:       pos,
+		End:         pos,
+		StartLine:   line,
+		StartColumn: col,
+		EndLine:     line,
+		EndColumn:   col,
+		TokenNumber: tokenNum,
+	}
 }
 
 func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
@@ -1970,18 +2003,13 @@ func lexerCheckEOFStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole
 	session *StreamingLexerSession[TObservation, TState],
 ) (Lexeme[TObservation, TToken, TTokenRole], bool) {
 	if session.eof && len(session.buffer) == 0 {
-		pos := session.absPos
-		return Lexeme[TObservation, TToken, TTokenRole]{
-			Token:       lexer.eofToken,
-			Raw:         nil,
-			Start:       pos,
-			End:         pos,
-			StartLine:   session.currentLine,
-			StartColumn: session.currentColumn,
-			EndLine:     session.currentLine,
-			EndColumn:   session.currentColumn,
-			TokenNumber: session.tokenNumber,
-		}, true
+		return lexerBuildEOF[TObservation, TToken, TTokenRole](
+			lexer.eofToken,
+			session.absPos,
+			session.currentLine,
+			session.currentColumn,
+			session.tokenNumber,
+		), true
 	}
 	var zero Lexeme[TObservation, TToken, TTokenRole]
 	return zero, false
