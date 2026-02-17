@@ -147,7 +147,6 @@ func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken, TokenRole], all
 		map[LexerState]LexingRuleset[rune, TestToken, TokenRole]{
 			NormalState: *rules,
 		},
-		ErrorToken,
 		EOFToken,
 		func(sizeBytes, alignment uint64) memcore.MarkRaw {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(
@@ -192,22 +191,22 @@ func testQuotedStringClassic(t *testing.T, lexer *Lexer[rune, LexerState, TestTo
 
 	input := []rune(`"hello world"`)
 
-	session := LexerSessionCreate(
+	session := LexerSessionCreate[rune, LexerState, TestToken](
 		NormalState,
 		input,
 		NewlineDetectorRune(),
 	)
 
-	lex, err := LexerConsume(lexer, session)
+	lex := LexerConsume(lexer, session)
 
 	ftesting.Assert(
-		err == nil,
-		fmt.Sprintf("quoted string consume error: %v", err),
+		session.lastError == nil,
+		fmt.Sprintf("quoted string consume error: %v", session.lastError),
 		"quoted string consume ok",
 		t,
 	)
 
-	if err == nil {
+	if session.lastError == nil {
 		ftesting.Assert(
 			lex.Token == QuotedStringToken,
 			fmt.Sprintf("expected QuotedStringToken got %v raw=%q", lex.Token, string(lex.Raw)),
@@ -250,7 +249,7 @@ func testQuotedStringStreaming(t *testing.T, lexer *Lexer[rune, LexerState, Test
 		return n, false, nil
 	}
 
-	session := StreamingLexerSessionCreate(
+	session := StreamingLexerSessionCreate[rune, LexerState, TestToken](
 		NormalState,
 		producer,
 		NewlineDetectorRune(),
@@ -258,16 +257,16 @@ func testQuotedStringStreaming(t *testing.T, lexer *Lexer[rune, LexerState, Test
 		64,
 	)
 
-	lex, err := LexerConsumeStreaming(lexer, session)
+	lex := LexerConsumeStreaming(lexer, session)
 
 	ftesting.Assert(
-		err == nil,
-		fmt.Sprintf("stream quoted consume error: %v", err),
+		session.lastError == nil,
+		fmt.Sprintf("stream quoted consume error: %v", session.lastError),
 		"stream quoted consume ok",
 		t,
 	)
 
-	if err == nil {
+	if session.lastError == nil {
 		ftesting.Assert(
 			lex.Token == QuotedStringToken,
 			fmt.Sprintf("stream expected QuotedStringToken got %v raw=%q", lex.Token, string(lex.Raw)),

@@ -8,7 +8,6 @@ import (
 	"memarch"
 	"memcore"
 	"memforge"
-	"runtime"
 	"strings"
 	"sync/atomic"
 )
@@ -20,8 +19,8 @@ type ObservationFormatter[TObservation any] func(obs TObservation) string
 type LexingError[TObservation cmp.Ordered, TToken comparable] struct {
 	Position int
 
-	Line   int
-	Column int
+	StartLine   int
+	StartColumn int
 
 	DFAState    uint64
 	HasDFAState bool
@@ -30,7 +29,8 @@ type LexingError[TObservation cmp.Ordered, TToken comparable] struct {
 	Furthest int
 
 	// What was seen (if any)
-	Found *TObservation
+	Found    TObservation
+	HasFound bool
 
 	// What transitions were possible
 	Expected []autarch.SymbolDefinition[TObservation]
@@ -91,8 +91,8 @@ func (e *LexingError[TObs, TToken]) Error() string {
 
 		return fmt.Sprintf(
 			"unexpected EOF at line %d:%d (expected %s) (absolute position %d) [dfaState=%s]",
-			e.Line,
-			e.Column,
+			e.StartLine,
+			e.StartColumn,
 			e.formatExpected(fmtObs),
 			e.Position,
 			stateStr,
@@ -106,12 +106,12 @@ func (e *LexingError[TObs, TToken]) Error() string {
 			stateStr = "?"
 		}
 
-		if e.Found != nil {
+		if e.HasFound {
 			return fmt.Sprintf(
 				"unexpected %s at line %d:%d (expected %s) [dfaState=%s]",
-				fmtObs(*e.Found),
-				e.Line,
-				e.Column,
+				fmtObs(e.Found),
+				e.StartLine,
+				e.StartColumn,
 				e.formatExpected(fmtObs),
 				stateStr,
 			)
@@ -119,8 +119,8 @@ func (e *LexingError[TObs, TToken]) Error() string {
 
 		return fmt.Sprintf(
 			"invalid input at line %d:%d (expected %s) [dfaState=%s]",
-			e.Line,
-			e.Column,
+			e.StartLine,
+			e.StartColumn,
 			e.formatExpected(fmtObs),
 			stateStr,
 		)
@@ -503,7 +503,7 @@ Edge cases:
 - State can be changed via LexerSessionSetState
 - Input is stored by reference, so modifications affect lexing
 */
-type LexerSession[TObservation cmp.Ordered, TState comparable] struct {
+type LexerSession[TObservation cmp.Ordered, TState, TToken comparable] struct {
 	currentState TState
 
 	input    []TObservation
@@ -516,19 +516,21 @@ type LexerSession[TObservation cmp.Ordered, TState comparable] struct {
 	tokenNumber     int // Next token sequence number (1-indexed)
 
 	inUse atomic.Bool
+
+	lastError *LexingError[TObservation, TToken]
 }
 
-func (s *LexerSession[TObservation, TState]) begin() {
+func (s *LexerSession[TObservation, TState, TToken]) begin() {
 	if !s.inUse.CompareAndSwap(false, true) {
 		panic("LexerSession is already in use (concurrent or re-entrant use detected)")
 	}
 }
 
-func (s *LexerSession[TObservation, TState]) end() {
+func (s *LexerSession[TObservation, TState, TToken]) end() {
 	s.inUse.Store(false)
 }
 
-func (s *LexerSession[TObservation, TState]) Position() int {
+func (s *LexerSession[TObservation, TState, TTOken]) Position() int {
 	return s.position
 }
 
@@ -540,7 +542,7 @@ type LexerSessionSnapshot[TState comparable] struct {
 	TokenNumber int
 }
 
-func (s *LexerSession[TObservation, TState]) Snapshot() LexerSessionSnapshot[TState] {
+func (s *LexerSession[TObservation, TState, TToken]) Snapshot() LexerSessionSnapshot[TState] {
 	return LexerSessionSnapshot[TState]{
 		State:       s.currentState,
 		Position:    s.position,
@@ -550,7 +552,7 @@ func (s *LexerSession[TObservation, TState]) Snapshot() LexerSessionSnapshot[TSt
 	}
 }
 
-func (s *LexerSession[TObservation, TState]) RestoreSnapshot(ss LexerSessionSnapshot[TState]) {
+func (s *LexerSession[TObservation, TState, TToken]) RestoreSnapshot(ss LexerSessionSnapshot[TState]) {
 	s.currentState = ss.State
 	s.position = ss.Position
 	s.currentLine = ss.Line
@@ -579,7 +581,7 @@ Edge cases:
 - Invalid states will cause errors on next Consume/Peek operation
 - State changes take effect immediately for subsequent operations
 */
-func LexerSessionSetState[TObservation cmp.Ordered, TState comparable](lexerSession *LexerSession[TObservation, TState], state TState) {
+func LexerSessionSetState[TObservation cmp.Ordered, TState, TToken comparable](lexerSession *LexerSession[TObservation, TState, TToken], state TState) {
 	lexerSession.currentState = state
 }
 
@@ -604,12 +606,12 @@ Edge cases:
 - Position starts at 0
 - Session can be reused by resetting position and state
 */
-func LexerSessionCreate[TObservation cmp.Ordered, TState comparable](
+func LexerSessionCreate[TObservation cmp.Ordered, TState, TToken comparable](
 	initialState TState,
 	input []TObservation,
 	newlineDetector NewlineDetector[TObservation],
-) *LexerSession[TObservation, TState] {
-	return &LexerSession[TObservation, TState]{
+) *LexerSession[TObservation, TState, TToken] {
+	return &LexerSession[TObservation, TState, TToken]{
 		currentState:    initialState,
 		input:           input,
 		position:        0,
@@ -617,11 +619,12 @@ func LexerSessionCreate[TObservation cmp.Ordered, TState comparable](
 		currentLine:     1,
 		currentColumn:   1,
 		tokenNumber:     1,
+		lastError:       nil,
 	}
 }
 
 /* Reset allows the same lexer session to be re-used again. */
-func (s *LexerSession[TObservation, TState]) Reset(
+func (s *LexerSession[TObservation, TState, TToken]) Reset(
 	input []TObservation,
 	initialState TState,
 ) {
@@ -635,6 +638,11 @@ func (s *LexerSession[TObservation, TState]) Reset(
 	s.currentLine = 1
 	s.currentColumn = 1
 	s.tokenNumber = 1
+	s.lastError = nil
+}
+
+func (s *LexerSession[TObservation, TState, TToken]) GetLastError() *LexingError[TObservation, TToken] {
+	return s.lastError
 }
 
 /*
@@ -683,7 +691,7 @@ Edge cases:
   - If maxBufferedObservations is too small for the longest token in the language,
     scanning can fail with an explicit buffer limit error.
 */
-type StreamingLexerSession[TObservation cmp.Ordered, TState comparable] struct {
+type StreamingLexerSession[TObservation cmp.Ordered, TState, TToken comparable] struct {
 	currentState TState
 
 	producer ObservationProducerFn[TObservation]
@@ -706,19 +714,21 @@ type StreamingLexerSession[TObservation cmp.Ordered, TState comparable] struct {
 	tokenNumber     int // Next token sequence number (1-indexed)
 
 	inUse atomic.Bool
+
+	lastError *LexingError[TObservation, TToken]
 }
 
-func (s *StreamingLexerSession[TObservation, TState]) begin() {
+func (s *StreamingLexerSession[TObservation, TState, TToken]) begin() {
 	if !s.inUse.CompareAndSwap(false, true) {
 		panic("LexerSession is already in use (concurrent or re-entrant use detected)")
 	}
 }
 
-func (s *StreamingLexerSession[TObservation, TState]) end() {
+func (s *StreamingLexerSession[TObservation, TState, TToken]) end() {
 	s.inUse.Store(false)
 }
 
-func (s *StreamingLexerSession[TObservation, TState]) AbsPosition() int {
+func (s *StreamingLexerSession[TObservation, TState, TToken]) AbsPosition() int {
 	return s.absPos
 }
 
@@ -732,7 +742,7 @@ type StreamingLexerSessionSnapshot[TObservation cmp.Ordered, TState comparable] 
 	Buffer      []TObservation
 }
 
-func (s *StreamingLexerSession[TObservation, TState]) Snapshot() StreamingLexerSessionSnapshot[TObservation, TState] {
+func (s *StreamingLexerSession[TObservation, TState, TToken]) Snapshot() StreamingLexerSessionSnapshot[TObservation, TState] {
 	bufCopy := make([]TObservation, len(s.buffer))
 	copy(bufCopy, s.buffer)
 
@@ -747,7 +757,7 @@ func (s *StreamingLexerSession[TObservation, TState]) Snapshot() StreamingLexerS
 	}
 }
 
-func (s *StreamingLexerSession[TObservation, TState]) RestoreSnapshot(
+func (s *StreamingLexerSession[TObservation, TState, TToken]) RestoreSnapshot(
 	snap StreamingLexerSessionSnapshot[TObservation, TState],
 ) {
 	s.currentState = snap.State
@@ -784,13 +794,13 @@ Edge cases:
 - Panics if readChunkSize <= 0
 - Panics if maxBufferedObservations <= 0
 */
-func StreamingLexerSessionCreate[TObservation cmp.Ordered, TState comparable](
+func StreamingLexerSessionCreate[TObservation cmp.Ordered, TState, TToken comparable](
 	initialState TState,
 	producer ObservationProducerFn[TObservation],
 	newlineDetector NewlineDetector[TObservation],
 	readChunkSize int,
 	maxBufferedObservations int,
-) *StreamingLexerSession[TObservation, TState] {
+) *StreamingLexerSession[TObservation, TState, TToken] {
 	if producer == nil {
 		panic("producer must not be nil")
 	}
@@ -801,7 +811,7 @@ func StreamingLexerSessionCreate[TObservation cmp.Ordered, TState comparable](
 		panic("maxBufferedObservations must be > 0")
 	}
 
-	return &StreamingLexerSession[TObservation, TState]{
+	return &StreamingLexerSession[TObservation, TState, TToken]{
 		currentState:            initialState,
 		producer:                producer,
 		eof:                     false,
@@ -813,11 +823,12 @@ func StreamingLexerSessionCreate[TObservation cmp.Ordered, TState comparable](
 		currentLine:             1,
 		currentColumn:           1,
 		tokenNumber:             1,
+		lastError:               nil,
 	}
 }
 
 /* Reset allows the same lexer streaming-session to be re-used again. */
-func (s *StreamingLexerSession[TObservation, TState]) Reset(
+func (s *StreamingLexerSession[TObservation, TState, TToken]) Reset(
 	producer ObservationProducerFn[TObservation],
 	initialState TState,
 ) {
@@ -833,6 +844,7 @@ func (s *StreamingLexerSession[TObservation, TState]) Reset(
 	s.tokenNumber = 1
 	s.eof = false
 	s.buffer = s.buffer[:0]
+	s.lastError = nil
 }
 
 /*
@@ -845,11 +857,15 @@ Use cases:
 Time complexity: O(1)
 Space complexity: O(1)
 */
-func StreamingLexerSessionSetState[TObservation cmp.Ordered, TState comparable](
-	session *StreamingLexerSession[TObservation, TState],
+func StreamingLexerSessionSetState[TObservation cmp.Ordered, TState, TToken comparable](
+	session *StreamingLexerSession[TObservation, TState, TToken],
 	state TState,
 ) {
 	session.currentState = state
+}
+
+func (s *StreamingLexerSession[TObservation, TState, TToken]) GetLastError() *LexingError[TObservation, TToken] {
+	return s.lastError
 }
 
 /*
@@ -880,7 +896,6 @@ type Lexer[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable] stru
 	tokenResolutions map[TState]TokenResolutionStepFn[TToken]
 
 	dfaAllocator memcore.MarkRaw
-	errorToken   TToken
 	eofToken     TToken
 
 	formatter ObservationFormatter[TObservation]
@@ -919,7 +934,6 @@ Edge cases:
 */
 func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	inputRulesets map[TState]LexingRuleset[TObservation, TToken, TTokenRole],
-	errorToken TToken,
 	eofToken TToken,
 	scratchAllocationFn memarch.AllocationFn,
 	maxDFAAllocatorMemory memcore.MemoryUnitBytes,
@@ -957,7 +971,6 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 		ruleSets:         lexerRulesets,
 		tokenResolutions: tokenResolutions,
 		dfaAllocator:     dfaAllocator,
-		errorToken:       errorToken,
 		eofToken:         eofToken,
 		formatter:        formatter,
 	}
@@ -1083,31 +1096,37 @@ func LexerClose[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable]
 /*
 LexerConsume recognizes and consumes the next token.
 
-Equivalent to Peek(0) followed by advancing the session.
+If an error occurs or the session already has an error, it returns an EOF lexeme
+and sets session.lastError.
 
-Time complexity:
-- O(length of matched token)
-
-Use cases:
-- Sequential token consumption
-- Recursive descent parsers
+Time complexity: O(length of matched token)
 */
 func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *LexerSession[TObservation, TState],
-) (Lexeme[TObservation, TToken, TTokenRole], error) {
+	session *LexerSession[TObservation, TState, TToken],
+) Lexeme[TObservation, TToken, TTokenRole] {
 	session.begin()
 	defer session.end()
 
+	if session.lastError != nil {
+		return lexerBuildEOFSession(lexer, session)
+	}
+
 	if eofLexeme, atEOF := lexerCheckEOF(lexer, session); atEOF {
-		return eofLexeme, nil
+		return eofLexeme
 	}
 
 	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
 	if err != nil {
-		return Lexeme[TObservation, TToken, TTokenRole]{}, &LexingError[TObservation, TToken]{
-			Reason: LexErrNoTransition,
+		lexErr := &LexingError[TObservation, TToken]{
+			Position:    session.position,
+			StartLine:   session.currentLine,
+			StartColumn: session.currentColumn,
+			Reason:      LexErrNoTransition,
+			Formatter:   lexer.formatter,
 		}
+		session.lastError = lexErr
+		return lexerBuildEOFSession(lexer, session)
 	}
 
 	next := func(i int) (TObservation, bool, error) {
@@ -1120,10 +1139,10 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 	}
 
 	token, tokenRole, endRel, found, _, lexErr := scanCore(dfa, next, resolutionStep, true)
-
 	if lexErr != nil {
 		lexErr.Position = session.position + lexErr.Position
 		lexErr.Furthest = session.position + lexErr.Furthest
+		lexErr.Formatter = lexer.formatter
 
 		line, col := computePositionFromSlice(
 			session.input[session.position:lexErr.Position],
@@ -1131,20 +1150,19 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 			session.currentLine,
 			session.currentColumn,
 		)
+		lexErr.StartLine = line
+		lexErr.StartColumn = col
 
-		lexErr.Line = line
-		lexErr.Column = col
-
-		return Lexeme[TObservation, TToken, TTokenRole]{}, lexErrAsError(lexer, lexErr)
+		session.lastError = lexErr
+		return lexerBuildEOFSession(lexer, session)
 	}
 
 	if !found {
-		return Lexeme[TObservation, TToken, TTokenRole]{}, nil
+		return lexerBuildEOFSession(lexer, session)
 	}
 
-	end := session.position + endRel
-
 	start := session.position
+	end := session.position + endRel
 	raw := copyRaw(session.input[start:end])
 
 	endLine, endCol := computePositionFromSlice(
@@ -1172,317 +1190,213 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 	session.currentLine = lex.EndLine
 	session.currentColumn = lex.EndColumn
 
-	return lex, nil
+	return lex
 }
 
 /*
 LexerConsumeRange consumes and returns up to `count` tokens.
 
-Equivalent to calling LexerConsume repeatedly, but uses a shared scanning pass.
-
-If EOF is encountered early, an EOF lexeme is included and consumption stops.
+If an error occurs, the returned slice contains tokens found up to the error point.
+The session state is updated to reflect the last successfully consumed token.
 */
 func LexerConsumeRange[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *LexerSession[TObservation, TState],
+	session *LexerSession[TObservation, TState, TToken],
 	count int,
-) ([]Lexeme[TObservation, TToken, TTokenRole], error) {
+) []Lexeme[TObservation, TToken, TTokenRole] {
 	session.begin()
 	defer session.end()
 
-	if count < 0 {
-		return nil, fmt.Errorf("count must be >= 0")
+	if count <= 0 || session.lastError != nil {
+		return nil
 	}
 
 	ctx := scannerFromSlice(session)
-
 	lexemes, err := lexerPeekRangeCore(
-		lexer,
-		ctx,
-		session.currentState,
-		session.newlineDetector,
-		session.currentLine,
-		session.currentColumn,
-		session.tokenNumber,
-		count,
+		lexer, ctx, session.currentState, session.newlineDetector,
+		session.currentLine, session.currentColumn, session.tokenNumber, count,
 	)
+
 	if err != nil {
-		return nil, lexErrAsError(lexer, err)
+		err.Formatter = lexer.formatter
+		session.lastError = err
 	}
 
-	// Update real session state from last token
 	if len(lexemes) > 0 {
 		last := lexemes[len(lexemes)-1]
 		session.currentLine = last.EndLine
 		session.currentColumn = last.EndColumn
 		session.tokenNumber += len(lexemes)
+		session.position = last.End
 	}
 
-	return lexemes, nil
+	return lexemes
 }
 
 /*
 LexerPeek returns the n-th token ahead without consuming input.
-
-Peek(0) returns the current token.
-Peek(1) returns the next token, etc.
-
-This function never mutates the session state.
-
-Time complexity:
-- O(total length of tokens scanned up to n)
-
-Use cases:
-- LL(k) parsing
-- Predictive parsing
-- Grammar lookahead
 */
 func LexerPeek[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *LexerSession[TObservation, TState],
+	session *LexerSession[TObservation, TState, TToken],
 	n int,
-) (Lexeme[TObservation, TToken, TTokenRole], error) {
+) Lexeme[TObservation, TToken, TTokenRole] {
 	session.begin()
 	defer session.end()
 
-	if n < 0 {
-		return Lexeme[TObservation, TToken, TTokenRole]{},
-			fmt.Errorf("peek index must be >= 0")
+	if n < 0 || session.lastError != nil {
+		return lexerBuildEOFSession(lexer, session)
 	}
 
-	// Simulated scanner context (does NOT mutate session)
 	ctx := scannerFromSliceSimulated(session)
-
-	// We need n+1 tokens to get the nth lookahead
 	lexemes, err := lexerPeekRangeCore(
-		lexer,
-		ctx,
-		session.currentState,
-		session.newlineDetector,
-		session.currentLine,
-		session.currentColumn,
-		session.tokenNumber,
-		n+1,
+		lexer, ctx, session.currentState, session.newlineDetector,
+		session.currentLine, session.currentColumn, session.tokenNumber, n+1,
 	)
+
 	if err != nil {
-		return Lexeme[TObservation, TToken, TTokenRole]{}, lexErrAsError(lexer, err)
+		err.Formatter = lexer.formatter
+		session.lastError = err
+		return lexerBuildEOFSession(lexer, session)
 	}
 
-	if len(lexemes) == 0 {
-		if eofLex, atEOF := lexerCheckEOF(lexer, session); atEOF {
-			return eofLex, nil
-		}
-
-		return Lexeme[TObservation, TToken, TTokenRole]{}, lexErrAsError(lexer, &LexingError[TObservation, TToken]{
-			Position: session.position,
-			Line:     session.currentLine,
-			Column:   session.currentColumn,
-			Reason:   LexErrNoTransition,
-		})
+	if len(lexemes) <= n {
+		return lexerBuildEOFSession(lexer, session)
 	}
 
-	return lexemes[len(lexemes)-1], nil
-
+	return lexemes[n]
 }
 
 /*
 LexerPeekRange returns up to `count` upcoming tokens without consuming input.
-
-PeekRange(1) returns the current token.
-PeekRange(2) returns [current, next].
-
-The session state is not modified.
-
-If EOF is encountered early, an EOF lexeme is included and scanning stops.
 */
 func LexerPeekRange[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *LexerSession[TObservation, TState],
+	session *LexerSession[TObservation, TState, TToken],
 	count int,
-) ([]Lexeme[TObservation, TToken, TTokenRole], error) {
+) []Lexeme[TObservation, TToken, TTokenRole] {
 	session.begin()
 	defer session.end()
 
-	if count < 0 {
-		return nil, fmt.Errorf("count must be >= 0")
+	if count <= 0 || session.lastError != nil {
+		return nil
 	}
 
 	ctx := scannerFromSliceSimulated(session)
-
 	lexemes, err := lexerPeekRangeCore(
-		lexer,
-		ctx,
-		session.currentState,
-		session.newlineDetector,
-		session.currentLine,
-		session.currentColumn,
-		session.tokenNumber,
-		count,
+		lexer, ctx, session.currentState, session.newlineDetector,
+		session.currentLine, session.currentColumn, session.tokenNumber, count,
 	)
 
-	return lexemes, lexErrAsError(lexer, err)
+	if err != nil {
+		err.Formatter = lexer.formatter
+		session.lastError = err
+	}
+
+	return lexemes
 }
 
 /*
-LexerAssertConsume consumes the next token and verifies it matches the expected token type.
-If the token does not match, an error is returned describing the mismatch. This is useful for
-parsers that require specific token sequences.
-
-Use cases:
-- Parsing structured formats with required tokens
-- Validating token sequences
-- Implementing grammar rules with mandatory tokens
-
-Time complexity: O(n) where n is the length of the matched token
-Space complexity: O(1) - returns slice into original input
-
-Prerequisites:
-- lexer must be a valid, non-closed lexer
-- session must be a valid session with valid current state
-- session position must be within input bounds
-
-Edge cases:
-- Returns error if token recognition fails (from LexerConsume)
-- Returns error if recognized token does not match expected
-- Advances position only if token matches
-- Error message includes expected and actual token values with position
+LexerAssertConsume consumes the next token and verifies it matches the expected type.
 */
 func LexerAssertConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *LexerSession[TObservation, TState],
+	session *LexerSession[TObservation, TState, TToken],
 	expected TToken,
-) (Lexeme[TObservation, TToken, TTokenRole], error) {
+) Lexeme[TObservation, TToken, TTokenRole] {
+	lex := LexerConsume(lexer, session)
 
-	lex, err := LexerConsume(lexer, session)
-	if err != nil {
-		return lex, err
+	if session.lastError == nil && lex.Token != expected {
+		session.lastError = &LexingError[TObservation, TToken]{
+			Position:    lex.Start,
+			StartLine:   lex.StartLine,
+			StartColumn: lex.StartColumn,
+			Reason:      LexErrNoTransition,
+			Formatter:   lexer.formatter,
+		}
+		return lexerBuildEOFSession(lexer, session)
 	}
 
-	if lex.Token != expected {
-		return lex, fmt.Errorf(
-			"expected %v, got %v at %d",
-			expected, lex.Token, lex.Start,
-		)
-	}
-
-	return lex, nil
+	return lex
 }
 
 /*
-LexerAssertPeek peeks at the next token and verifies it matches the expected token type without
-consuming it. If the token does not match, an error is returned describing the mismatch.
-
-Use cases:
-- Validating lookahead tokens before consuming
-- Implementing conditional parsing based on token type
-- Checking token sequences without consuming
-
-Time complexity: O(n) where n is the length of the matched token
-Space complexity: O(1) - returns slice into original input
-
-Prerequisites:
-- lexer must be a valid, non-closed lexer
-- session must be a valid session with valid current state
-- session position must be within input bounds
-
-Edge cases:
-- Returns error if token recognition fails (from LexerPeek)
-- Returns error if recognized token does not match expected
-- Does not modify session position
-- Error message includes expected and actual token values with position
+LexerAssertPeek peeks at the n-th token and verifies it matches the expected type.
 */
 func LexerAssertPeek[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *LexerSession[TObservation, TState],
+	session *LexerSession[TObservation, TState, TToken],
 	expected TToken,
 	n int,
-) (Lexeme[TObservation, TToken, TTokenRole], error) {
+) Lexeme[TObservation, TToken, TTokenRole] {
+	lex := LexerPeek(lexer, session, n)
 
-	lex, err := LexerPeek(lexer, session, n)
-	if err != nil {
-		return lex, err
+	if session.lastError == nil && lex.Token != expected {
+		session.lastError = &LexingError[TObservation, TToken]{
+			Position:    lex.Start,
+			StartLine:   lex.StartLine,
+			StartColumn: lex.StartColumn,
+			Reason:      LexErrNoTransition,
+			Formatter:   lexer.formatter,
+		}
+		return lexerBuildEOFSession(lexer, session)
 	}
 
-	if lex.Token != expected {
-		return lex, fmt.Errorf(
-			"expected %v, got %v at %d",
-			expected, lex.Token, lex.Start,
-		)
-	}
-
-	return lex, nil
+	return lex
 }
 
 /*
 LexerConsumeStreaming consumes the next token from a streaming session.
-
-Equivalent to LexerConsume for streaming inputs.
 */
 func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *StreamingLexerSession[TObservation, TState],
-) (Lexeme[TObservation, TToken, TTokenRole], error) {
+	session *StreamingLexerSession[TObservation, TState, TToken],
+) Lexeme[TObservation, TToken, TTokenRole] {
 	session.begin()
 	defer session.end()
 
+	if session.lastError != nil {
+		return lexerBuildEOFSessionStream(lexer, session)
+	}
+
 	if eofLexeme, atEOF := lexerCheckEOFStreaming(lexer, session); atEOF {
-		return eofLexeme, nil
+		return eofLexeme
 	}
 
 	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
 	if err != nil {
-		return Lexeme[TObservation, TToken, TTokenRole]{}, &LexingError[TObservation, TToken]{
-			Reason: LexErrNoTransition,
+		session.lastError = &LexingError[TObservation, TToken]{
+			Position:    session.absPos,
+			StartLine:   session.currentLine,
+			StartColumn: session.currentColumn,
+			Reason:      LexErrNoTransition,
+			Formatter:   lexer.formatter,
 		}
+		return lexerBuildEOFSessionStream(lexer, session)
 	}
 
 	next := streamingNextFn(session)
-
 	token, role, endRel, found, _, lexErr := scanCore(dfa, next, resolutionStep, true)
 
 	if lexErr != nil {
-		lexErr.Position = session.absPos + lexErr.Position
-		lexErr.Furthest = session.absPos + lexErr.Furthest
-
-		line, col := computePositionFromSlice(
-			session.buffer[:lexErr.Position-session.absPos],
-			session.newlineDetector,
-			session.currentLine,
-			session.currentColumn,
-		)
-
-		lexErr.Line = line
-		lexErr.Column = col
-
-		return Lexeme[TObservation, TToken, TTokenRole]{}, lexErrAsError(lexer, lexErr)
+		lexErr.Formatter = lexer.formatter
+		session.lastError = lexErr
+		return lexerBuildEOFSessionStream(lexer, session)
 	}
 
 	if !found {
-		return Lexeme[TObservation, TToken, TTokenRole]{}, nil
+		return lexerBuildEOFSessionStream(lexer, session)
 	}
 
-	raw := copyRaw(session.buffer[:endRel])
-	endLine, endCol := computePositionFromSlice(
-		raw,
-		session.newlineDetector,
-		session.currentLine,
-		session.currentColumn,
-	)
+	var raw []TObservation
+	if endRel > 0 && endRel <= len(session.buffer) {
+		raw = copyRaw(session.buffer[:endRel])
+	}
 
-	lex := lexemeBuild(
-		token,
-		raw,
-		session.absPos,
-		session.absPos+endRel,
-		session.currentLine,
-		session.currentColumn,
-		endLine,
-		endCol,
-		session.tokenNumber,
-		role,
-	)
+	endLine, endCol := computePositionFromSlice(raw, session.newlineDetector, session.currentLine, session.currentColumn)
 
-	// advance real streaming session
+	lex := lexemeBuild(token, raw, session.absPos, session.absPos+endRel, session.currentLine, session.currentColumn, endLine, endCol, session.tokenNumber, role)
+
 	session.tokenNumber++
 	session.absPos += endRel
 	session.currentLine = lex.EndLine
@@ -1490,43 +1404,33 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 	session.buffer = session.buffer[endRel:]
 
 	streamingMaybeCompact(session)
-
-	return lex, nil
+	return lex
 }
 
 /*
-LexerConsumeRangeStreaming consumes and returns up to `count` tokens
-from a streaming session.
-
-Equivalent to repeated LexerConsumeStreaming calls but uses
-a single scanning pass.
+LexerConsumeRangeStreaming consumes and returns up to `count` tokens from a streaming session.
 */
 func LexerConsumeRangeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *StreamingLexerSession[TObservation, TState],
+	session *StreamingLexerSession[TObservation, TState, TToken],
 	count int,
-) ([]Lexeme[TObservation, TToken, TTokenRole], error) {
+) []Lexeme[TObservation, TToken, TTokenRole] {
 	session.begin()
 	defer session.end()
 
-	if count < 0 {
-		return nil, fmt.Errorf("count must be >= 0")
+	if count <= 0 || session.lastError != nil {
+		return nil
 	}
 
 	ctx := scannerFromStreaming(session)
-
 	lexemes, err := lexerPeekRangeCore(
-		lexer,
-		ctx,
-		session.currentState,
-		session.newlineDetector,
-		session.currentLine,
-		session.currentColumn,
-		session.tokenNumber,
-		count,
+		lexer, ctx, session.currentState, session.newlineDetector,
+		session.currentLine, session.currentColumn, session.tokenNumber, count,
 	)
+
 	if err != nil {
-		return nil, lexErrAsError(lexer, err)
+		err.Formatter = lexer.formatter
+		session.lastError = err
 	}
 
 	if len(lexemes) > 0 {
@@ -1536,178 +1440,105 @@ func LexerConsumeRangeStreaming[TObservation cmp.Ordered, TState, TToken, TToken
 		session.tokenNumber += len(lexemes)
 	}
 
-	return lexemes, nil
+	return lexemes
 }
 
 /*
 LexerPeekStreaming performs lookahead on a streaming session.
-
-Identical semantics to LexerPeek, but input is sourced lazily
-from the producer and buffered as needed.
-
-PeekStreaming(0) returns the current token.
-
-This function does NOT consume input.
 */
 func LexerPeekStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *StreamingLexerSession[TObservation, TState],
+	session *StreamingLexerSession[TObservation, TState, TToken],
 	n int,
-) (Lexeme[TObservation, TToken, TTokenRole], error) {
-	if n < 0 {
-		return Lexeme[TObservation, TToken, TTokenRole]{},
-			fmt.Errorf("peek index must be >= 0")
+) Lexeme[TObservation, TToken, TTokenRole] {
+	if n < 0 || session.lastError != nil {
+		return lexerBuildEOFSessionStream(lexer, session)
 	}
 
-	lexemes, err := LexerPeekRangeStreaming(
-		lexer,
-		session,
-		n+1,
-	)
-	if err != nil {
-		return Lexeme[TObservation, TToken, TTokenRole]{}, err
-	}
-
+	lexemes := LexerPeekRangeStreaming(lexer, session, n+1)
 	if n >= len(lexemes) {
-		return Lexeme[TObservation, TToken, TTokenRole]{},
-			fmt.Errorf("peek out of range")
+		return lexerBuildEOFSessionStream(lexer, session)
 	}
 
-	return lexemes[n], nil
+	return lexemes[n]
 }
 
 /*
-LexerPeekRangeStreaming returns up to `count` upcoming tokens from a streaming session
-without consuming input.
-
-Buffer growth is bounded by maxBufferedObservations.
-
-The session state is not modified.
+LexerPeekRangeStreaming returns up to `count` upcoming tokens without consuming input.
 */
 func LexerPeekRangeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *StreamingLexerSession[TObservation, TState],
+	session *StreamingLexerSession[TObservation, TState, TToken],
 	count int,
-) ([]Lexeme[TObservation, TToken, TTokenRole], error) {
+) []Lexeme[TObservation, TToken, TTokenRole] {
 	session.begin()
 	defer session.end()
 
-	if count < 0 {
-		return nil, fmt.Errorf("count must be >= 0")
+	if count <= 0 || session.lastError != nil {
+		return nil
 	}
 
 	ctx := scannerFromStreamingSimulated(session)
-
 	lexemes, err := lexerPeekRangeCore(
-		lexer,
-		ctx,
-		session.currentState,
-		session.newlineDetector,
-		session.currentLine,
-		session.currentColumn,
-		session.tokenNumber,
-		count,
+		lexer, ctx, session.currentState, session.newlineDetector,
+		session.currentLine, session.currentColumn, session.tokenNumber, count,
 	)
 
-	return lexemes, lexErrAsError(lexer, err)
+	if err != nil {
+		err.Formatter = lexer.formatter
+		session.lastError = err
+	}
+
+	return lexemes
 }
 
 /*
-LexerAssertConsumeStreaming consumes the next token from a streaming session and verifies
-it matches the expected token type.
-
-This mirrors LexerAssertConsume but operates on streaming input sourced via a producer
-callback.
-
-Use cases:
-- Enforcing grammar structure in streaming parsers
-- Protocol parsing with required token sequences
-- Incremental syntax validation over large inputs
-
-Time complexity: O(n) where n is the matched token length (plus producer cost)
-Space complexity: O(1) excluding session buffer
-
-Prerequisites:
-- lexer must be a valid, non-closed lexer
-- session must be a valid StreamingLexerSession
-- expected must be a valid token value
-
-Edge cases:
-- Returns error if token recognition fails
-- Returns error if recognized token does not match expected
-- Advances stream position only if token matches
-- Error message includes expected and actual token values with absolute position
+LexerAssertConsumeStreaming consumes and verifies the next token from a streaming session.
 */
 func LexerAssertConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *StreamingLexerSession[TObservation, TState],
+	session *StreamingLexerSession[TObservation, TState, TToken],
 	expected TToken,
-) (Lexeme[TObservation, TToken, TTokenRole], error) {
+) Lexeme[TObservation, TToken, TTokenRole] {
+	lex := LexerConsumeStreaming(lexer, session)
 
-	lex, err := LexerConsumeStreaming(lexer, session)
-	if err != nil {
-		return lex, err
+	if session.lastError == nil && lex.Token != expected {
+		session.lastError = &LexingError[TObservation, TToken]{
+			Position:    lex.Start,
+			StartLine:   lex.StartLine,
+			StartColumn: lex.StartColumn,
+			Reason:      LexErrNoTransition,
+			Formatter:   lexer.formatter,
+		}
+		return lexerBuildEOFSessionStream(lexer, session)
 	}
 
-	if lex.Token != expected {
-		return lex, fmt.Errorf(
-			"expected %v, got %v at %d",
-			expected,
-			lex.Token,
-			lex.Start,
-		)
-	}
-
-	return lex, nil
+	return lex
 }
 
 /*
-LexerAssertPeekStreaming peeks at the next token from a streaming session and verifies
-it matches the expected token type without consuming it.
-
-This mirrors LexerAssertPeek but operates on streaming input.
-
-Use cases:
-- Lookahead validation in streaming grammars
-- Conditional parsing decisions
-- Verifying upcoming structure without consuming tokens
-
-Time complexity: O(n) where n is the matched token length (plus producer cost)
-Space complexity: O(1) excluding session buffer
-
-Prerequisites:
-- lexer must be a valid, non-closed lexer
-- session must be a valid StreamingLexerSession
-- expected must be a valid token value
-
-Edge cases:
-- Returns error if token recognition fails
-- Returns error if recognized token does not match expected
-- Does not modify session position
-- Error message includes expected and actual token values with absolute position
+LexerAssertPeekStreaming peeks and verifies the next token from a streaming session.
 */
 func LexerAssertPeekStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *StreamingLexerSession[TObservation, TState],
+	session *StreamingLexerSession[TObservation, TState, TToken],
 	expected TToken,
 	n int,
-) (Lexeme[TObservation, TToken, TTokenRole], error) {
+) Lexeme[TObservation, TToken, TTokenRole] {
+	lex := LexerPeekStreaming(lexer, session, n)
 
-	lex, err := LexerPeekStreaming(lexer, session, n)
-	if err != nil {
-		return lex, err
+	if session.lastError == nil && lex.Token != expected {
+		session.lastError = &LexingError[TObservation, TToken]{
+			Position:    lex.Start,
+			StartLine:   lex.StartLine,
+			StartColumn: lex.StartColumn,
+			Reason:      LexErrNoTransition,
+			Formatter:   lexer.formatter,
+		}
+		return lexerBuildEOFSessionStream(lexer, session)
 	}
 
-	if lex.Token != expected {
-		return lex, fmt.Errorf(
-			"expected %v, got %v at %d",
-			expected,
-			lex.Token,
-			lex.Start,
-		)
-	}
-
-	return lex, nil
+	return lex
 }
 
 // ------------------------------------------------------ PRIVATE HELPERS
@@ -1774,8 +1605,8 @@ func lexemeEOF[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	}
 }
 
-func streamingNextFn[TObservation cmp.Ordered, TState comparable](
-	session *StreamingLexerSession[TObservation, TState],
+func streamingNextFn[TObservation cmp.Ordered, TState, TToken comparable](
+	session *StreamingLexerSession[TObservation, TState, TToken],
 ) func(int) (TObservation, bool, error) {
 
 	return func(i int) (TObservation, bool, error) {
@@ -1813,13 +1644,13 @@ func computePositionFromSlice[TObservation cmp.Ordered](
 
 func lexerCheckEOF[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *LexerSession[TObservation, TState],
+	session *LexerSession[TObservation, TState, TToken],
 ) (Lexeme[TObservation, TToken, TTokenRole], bool) {
 	// fmt.Printf("Checking: pos=%05d, max=%05d; EOF? %v\n", session.position, len(session.input), session.position >= len(session.input))
 
 	if session.position >= len(session.input) {
-		return lexerBuildEOF[TObservation, TToken, TTokenRole](
-			lexer.eofToken,
+		return lexerBuildEOF(
+			lexer,
 			len(session.input),
 			session.currentLine,
 			session.currentColumn,
@@ -1830,29 +1661,29 @@ func lexerCheckEOF[TObservation cmp.Ordered, TState, TToken, TTokenRole comparab
 	return zero, false
 }
 
-/* LexerBuildEOF builds an eof lexeme. */
-func LexerBuildEOF[TObservation cmp.Ordered, TToken, TTokenRole comparable](
-	eofToken TToken,
-	pos int,
-	line int,
-	col int,
-	tokenNum int,
+func lexerBuildEOFSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *LexerSession[TObservation, TState, TToken],
 ) Lexeme[TObservation, TToken, TTokenRole] {
-	return lexerBuildEOF[TObservation, TToken, TTokenRole](
-		eofToken, pos, line, col, tokenNum,
-	)
+	return lexerBuildEOF(lexer, session.position, session.currentLine, session.currentColumn, session.tokenNumber)
 }
 
-func lexerBuildEOF[TObservation cmp.Ordered, TToken, TTokenRole comparable](
-	eofToken TToken,
+func lexerBuildEOFSessionStream[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *StreamingLexerSession[TObservation, TState, TToken],
+) Lexeme[TObservation, TToken, TTokenRole] {
+	return lexerBuildEOF(lexer, session.absPos, session.currentLine, session.currentColumn, session.tokenNumber)
+}
+
+func lexerBuildEOF[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	pos int,
 	line int,
 	col int,
 	tokenNum int,
 ) Lexeme[TObservation, TToken, TTokenRole] {
-
 	return Lexeme[TObservation, TToken, TTokenRole]{
-		Token:       eofToken,
+		Token:       lexer.eofToken,
 		Raw:         nil,
 		Start:       pos,
 		End:         pos,
@@ -1918,12 +1749,14 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 			}
 
 			expected := autarch.DFAPossibleTransitions(dfa, state)
-			o := obs
+
+			fmt.Printf("dead state reached with obs (scanCore): %v\n", obs)
 
 			return bestToken, bestRole, bestEnd, found, state, &LexingError[TObservation, TToken]{
 				Position:    pos,
 				Furthest:    furthestPos,
-				Found:       &o,
+				Found:       obs,
+				HasFound:    true,
 				Expected:    expected,
 				Reason:      LexErrNoTransition,
 				DFAState:    state,
@@ -2000,11 +1833,11 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 
 func lexerCheckEOFStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *StreamingLexerSession[TObservation, TState],
+	session *StreamingLexerSession[TObservation, TState, TToken],
 ) (Lexeme[TObservation, TToken, TTokenRole], bool) {
 	if session.eof && len(session.buffer) == 0 {
-		return lexerBuildEOF[TObservation, TToken, TTokenRole](
-			lexer.eofToken,
+		return lexerBuildEOF(
+			lexer,
 			session.absPos,
 			session.currentLine,
 			session.currentColumn,
@@ -2015,8 +1848,8 @@ func lexerCheckEOFStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole
 	return zero, false
 }
 
-func streamingEnsureAt[TObservation cmp.Ordered, TState comparable](
-	session *StreamingLexerSession[TObservation, TState],
+func streamingEnsureAt[TObservation cmp.Ordered, TState, TToken comparable](
+	session *StreamingLexerSession[TObservation, TState, TToken],
 	i int,
 ) error {
 	if i < 0 {
@@ -2063,7 +1896,7 @@ func streamingEnsureAt[TObservation cmp.Ordered, TState comparable](
 	return nil
 }
 
-func streamingMaybeCompact[TObservation cmp.Ordered, TState comparable](session *StreamingLexerSession[TObservation, TState]) {
+func streamingMaybeCompact[TObservation cmp.Ordered, TState, TToken comparable](session *StreamingLexerSession[TObservation, TState, TToken]) {
 	// If buffer is empty, drop backing array.
 	if len(session.buffer) == 0 {
 		session.buffer = session.buffer[:0:0]
@@ -2082,16 +1915,20 @@ func streamingMaybeCompact[TObservation cmp.Ordered, TState comparable](session 
 func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	ctx scannerContext[TObservation],
-	state TState,
+	lexerState TState,
 	newlineDetector NewlineDetector[TObservation],
 	startLine, startCol, startToken int,
 	count int,
 ) ([]Lexeme[TObservation, TToken, TTokenRole], *LexingError[TObservation, TToken]) {
 
-	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, state)
+	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, lexerState)
 	if err != nil {
 		return nil, &LexingError[TObservation, TToken]{
-			Reason: LexErrNoTransition,
+			Position:    ctx.position(),
+			StartLine:   startLine,
+			StartColumn: startCol,
+			Reason:      LexErrNoTransition,
+			Formatter:   lexer.formatter,
 		}
 	}
 
@@ -2102,7 +1939,6 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 	out := make([]Lexeme[TObservation, TToken, TTokenRole], 0, count)
 
 	for i := 0; i < count; i++ {
-
 		if ctx.atEOF() {
 			pos := ctx.position()
 			out = append(out, lexemeEOF[TObservation, TToken, TTokenRole](
@@ -2115,17 +1951,18 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 			break
 		}
 
-		token, tokenRole, raw, found, state, lexErr := scanOne(ctx, dfa, resolutionStep)
+		token, tokenRole, raw, found, currentDFAState, lexErr := scanOne(ctx, dfa, resolutionStep)
 
 		// =====================================================
 		// scanOne produced structured error
 		// =====================================================
-
 		if lexErr != nil {
 			base := ctx.position()
+			absoluteErrPos := base + lexErr.Position
 
-			lexErr.Position = base + lexErr.Position
+			lexErr.Position = absoluteErrPos
 			lexErr.Furthest = base + lexErr.Furthest
+			lexErr.Formatter = lexer.formatter
 
 			errLine, errCol := computePositionFromSlice(
 				ctx.slice(0, lexErr.Position-base),
@@ -2134,50 +1971,48 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 				col,
 			)
 
-			lexErr.Line = errLine
-			lexErr.Column = errCol
+			lexErr.StartLine = errLine
+			lexErr.StartColumn = errCol
 
-			// Fill Found if possible
-			if !ctx.atEOF() {
-				if obs, ok, _ := ctx.next(0); ok {
-					lexErr.Found = &obs
-				}
+			relativeOffset := absoluteErrPos - base
+			if obs, ok, _ := ctx.next(relativeOffset); ok {
+				lexErr.Found = obs
+				lexErr.HasFound = true
 			}
 
-			return nil, normalizeLexErr(lexErr)
+			return nil, lexErr
 		}
 
 		// =====================================================
-		// No transition at all
+		// No transition at all (Immediate failure)
 		// =====================================================
-
 		if !found {
-
 			if ctx.atEOF() {
 				return out, nil
 			}
 
-			var foundObs *TObservation
+			var foundObs TObservation
 			if obs, ok, _ := ctx.next(0); ok {
-				foundObs = &obs
+				foundObs = obs
 			}
 
-			return nil, normalizeLexErr(&LexingError[TObservation, TToken]{
+			return nil, &LexingError[TObservation, TToken]{
 				Position:    ctx.position(),
-				Line:        line,
-				Column:      col,
+				StartLine:   line,
+				StartColumn: col,
 				Found:       foundObs,
-				Expected:    autarch.DFAPossibleTransitions(dfa, state),
+				HasFound:    true,
+				Expected:    autarch.DFAPossibleTransitions(dfa, currentDFAState),
 				Reason:      LexErrNoTransition,
-				DFAState:    state,
+				DFAState:    currentDFAState,
 				HasDFAState: true,
-			})
+				Formatter:   lexer.formatter,
+			}
 		}
 
 		// =====================================================
 		// Normal token production
 		// =====================================================
-
 		start := ctx.position()
 
 		endLine, endCol := computePositionFromSlice(
@@ -2202,7 +2037,6 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 
 		out = append(out, lex)
 
-		// single mutation point
 		ctx.advanceRaw(raw)
 
 		line = endLine
@@ -2241,8 +2075,8 @@ type scannerContext[TObservation cmp.Ordered] struct {
 	advanceRaw func(raw []TObservation)
 }
 
-func scannerFromSlice[TObservation cmp.Ordered, TState comparable](
-	session *LexerSession[TObservation, TState],
+func scannerFromSlice[TObservation cmp.Ordered, TState, TToken comparable](
+	session *LexerSession[TObservation, TState, TToken],
 ) scannerContext[TObservation] {
 
 	return scannerContext[TObservation]{
@@ -2273,8 +2107,8 @@ func scannerFromSlice[TObservation cmp.Ordered, TState comparable](
 	}
 }
 
-func scannerFromStreaming[TObservation cmp.Ordered, TState comparable](
-	session *StreamingLexerSession[TObservation, TState],
+func scannerFromStreaming[TObservation cmp.Ordered, TState, TToken comparable](
+	session *StreamingLexerSession[TObservation, TState, TToken],
 ) scannerContext[TObservation] {
 
 	next := streamingNextFn(session)
@@ -2303,8 +2137,8 @@ func scannerFromStreaming[TObservation cmp.Ordered, TState comparable](
 	}
 }
 
-func scannerFromSliceSimulated[TObservation cmp.Ordered, TState comparable](
-	session *LexerSession[TObservation, TState],
+func scannerFromSliceSimulated[TObservation cmp.Ordered, TState, TToken comparable](
+	session *LexerSession[TObservation, TState, TToken],
 ) scannerContext[TObservation] {
 
 	pos := session.position
@@ -2337,8 +2171,8 @@ func scannerFromSliceSimulated[TObservation cmp.Ordered, TState comparable](
 	}
 }
 
-func scannerFromStreamingSimulated[TObservation cmp.Ordered, TState comparable](
-	session *StreamingLexerSession[TObservation, TState],
+func scannerFromStreamingSimulated[TObservation cmp.Ordered, TState, TToken comparable](
+	session *StreamingLexerSession[TObservation, TState, TToken],
 ) scannerContext[TObservation] {
 
 	buffer := session.buffer
@@ -2393,43 +2227,4 @@ func copyRaw[T any](src []T) []T {
 	dst := make([]T, len(src))
 	copy(dst, src)
 	return dst
-}
-
-func lexErrAsError[TObs cmp.Ordered, TState, TToken, TTokenRole comparable](
-	lexer *Lexer[TObs, TState, TToken, TTokenRole],
-	e *LexingError[TObs, TToken],
-) error {
-	if e == nil {
-		return nil
-	}
-	e.Formatter = lexer.formatter
-	return e
-}
-
-func normalizeLexErr[TObs cmp.Ordered, TToken comparable](e *LexingError[TObs, TToken]) *LexingError[TObs, TToken] {
-	// Fast path: real error
-	if e != nil {
-		return e
-	}
-
-	// Typed-nil detection:
-	// If this function is called, caller passed a *LexingError that was nil
-	// but wrapped as interface somewhere upstream.
-	pc, file, line, ok := runtime.Caller(1)
-	if ok {
-		fn := runtime.FuncForPC(pc)
-		fnName := "<unknown>"
-		if fn != nil {
-			fnName = fn.Name()
-		}
-
-		panic(fmt.Sprintf(
-			"BUG: typed-nil LexingError leaked from %s (%s:%d)",
-			fnName,
-			file,
-			line,
-		))
-	}
-
-	panic("BUG: typed-nil LexingError leaked (unknown caller)")
 }
