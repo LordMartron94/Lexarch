@@ -198,6 +198,7 @@ func testQuotedStringClassic(t *testing.T, lexer *Lexer[rune, LexerState, TestTo
 		NormalState,
 		input,
 		NewlineDetectorRune(),
+		ColumnAdvanceRune(4),
 	)
 
 	lex := LexerConsume(lexer, session)
@@ -256,6 +257,7 @@ func testQuotedStringStreaming(t *testing.T, lexer *Lexer[rune, LexerState, Test
 		NormalState,
 		producer,
 		NewlineDetectorRune(),
+		ColumnAdvanceRune(4),
 		2, // intentionally small
 		64,
 	)

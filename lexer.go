@@ -17,6 +17,7 @@ import (
 
 // ------------------------------------------------------ ERRORS
 
+/* ObservationFormatter turns an observation into a string. */
 type ObservationFormatter[TObservation any] func(obs TObservation) string
 
 type LexingError[TObservation cmp.Ordered, TToken comparable] struct {
@@ -235,6 +236,28 @@ Space complexity: O(1)
 func NewlineDetectorByte() NewlineDetector[byte] {
 	return func(obs byte) bool {
 		return obs == '\n'
+	}
+}
+
+/* ColumnAdvanceFn takes an observation and the current column and outputs the next column. */
+type ColumnAdvanceFn[TObservation any] func(
+	obs TObservation,
+	currentColumn int,
+) int
+
+func ColumnAdvanceRune(tabWidth int) ColumnAdvanceFn[rune] {
+	if tabWidth <= 0 {
+		panic("tabWidth must be > 0")
+	}
+
+	return func(r rune, col int) int {
+		switch r {
+		case '\t':
+			offset := (col - 1) % tabWidth
+			return col + (tabWidth - offset)
+		default:
+			return col + 1
+		}
 	}
 }
 
@@ -514,9 +537,11 @@ type LexerSession[TObservation cmp.Ordered, TState, TToken comparable] struct {
 
 	// Position tracking state
 	newlineDetector NewlineDetector[TObservation]
-	currentLine     int // Current line number (1-indexed)
-	currentColumn   int // Current column number (1-indexed)
-	tokenNumber     int // Next token sequence number (1-indexed)
+	columnAdvanceFn ColumnAdvanceFn[TObservation]
+
+	currentLine   int // Current line number (1-indexed)
+	currentColumn int // Current column number (1-indexed)
+	tokenNumber   int // Next token sequence number (1-indexed)
 
 	inUse atomic.Bool
 
@@ -613,12 +638,14 @@ func LexerSessionCreate[TObservation cmp.Ordered, TState, TToken comparable](
 	initialState TState,
 	input []TObservation,
 	newlineDetector NewlineDetector[TObservation],
+	columnAdvanceFn ColumnAdvanceFn[TObservation],
 ) *LexerSession[TObservation, TState, TToken] {
 	return &LexerSession[TObservation, TState, TToken]{
 		currentState:    initialState,
 		input:           input,
 		position:        0,
 		newlineDetector: newlineDetector,
+		columnAdvanceFn: columnAdvanceFn,
 		currentLine:     1,
 		currentColumn:   1,
 		tokenNumber:     1,
@@ -712,9 +739,11 @@ type StreamingLexerSession[TObservation cmp.Ordered, TState, TToken comparable] 
 
 	// Position tracking state
 	newlineDetector NewlineDetector[TObservation]
-	currentLine     int // Current line number (1-indexed)
-	currentColumn   int // Current column number (1-indexed)
-	tokenNumber     int // Next token sequence number (1-indexed)
+	columnAdvanceFn ColumnAdvanceFn[TObservation]
+
+	currentLine   int // Current line number (1-indexed)
+	currentColumn int // Current column number (1-indexed)
+	tokenNumber   int // Next token sequence number (1-indexed)
 
 	inUse atomic.Bool
 
@@ -801,6 +830,7 @@ func StreamingLexerSessionCreate[TObservation cmp.Ordered, TState, TToken compar
 	initialState TState,
 	producer ObservationProducerFn[TObservation],
 	newlineDetector NewlineDetector[TObservation],
+	columnAdvanceFn ColumnAdvanceFn[TObservation],
 	readChunkSize int,
 	maxBufferedObservations int,
 ) *StreamingLexerSession[TObservation, TState, TToken] {
@@ -823,6 +853,7 @@ func StreamingLexerSessionCreate[TObservation cmp.Ordered, TState, TToken compar
 		readChunkSize:           readChunkSize,
 		maxBufferedObservations: maxBufferedObservations,
 		newlineDetector:         newlineDetector,
+		columnAdvanceFn:         columnAdvanceFn,
 		currentLine:             1,
 		currentColumn:           1,
 		tokenNumber:             1,
@@ -1196,6 +1227,7 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 		line, col := computePositionFromSlice(
 			session.input[session.position:lexErr.Position],
 			session.newlineDetector,
+			session.columnAdvanceFn,
 			session.currentLine,
 			session.currentColumn,
 		)
@@ -1217,6 +1249,7 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 	endLine, endCol := computePositionFromSlice(
 		raw,
 		session.newlineDetector,
+		session.columnAdvanceFn,
 		session.currentLine,
 		session.currentColumn,
 	)
@@ -1262,7 +1295,7 @@ func LexerConsumeRange[TObservation cmp.Ordered, TState, TToken, TTokenRole comp
 
 	ctx := scannerFromSlice(session)
 	lexemes, err := lexerPeekRangeCore(
-		lexer, ctx, session.currentState, session.newlineDetector,
+		lexer, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
 		session.currentLine, session.currentColumn, session.tokenNumber, count,
 	)
 
@@ -1299,7 +1332,7 @@ func LexerPeek[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 
 	ctx := scannerFromSliceSimulated(session)
 	lexemes, err := lexerPeekRangeCore(
-		lexer, ctx, session.currentState, session.newlineDetector,
+		lexer, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
 		session.currentLine, session.currentColumn, session.tokenNumber, n+1,
 	)
 
@@ -1333,7 +1366,7 @@ func LexerPeekRange[TObservation cmp.Ordered, TState, TToken, TTokenRole compara
 
 	ctx := scannerFromSliceSimulated(session)
 	lexemes, err := lexerPeekRangeCore(
-		lexer, ctx, session.currentState, session.newlineDetector,
+		lexer, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
 		session.currentLine, session.currentColumn, session.tokenNumber, count,
 	)
 
@@ -1442,7 +1475,7 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 		raw = copyRaw(session.buffer[:endRel])
 	}
 
-	endLine, endCol := computePositionFromSlice(raw, session.newlineDetector, session.currentLine, session.currentColumn)
+	endLine, endCol := computePositionFromSlice(raw, session.newlineDetector, session.columnAdvanceFn, session.currentLine, session.currentColumn)
 
 	lex := lexemeBuild(token, raw, session.absPos, session.absPos+endRel, session.currentLine, session.currentColumn, endLine, endCol, session.tokenNumber, role)
 
@@ -1473,7 +1506,7 @@ func LexerConsumeRangeStreaming[TObservation cmp.Ordered, TState, TToken, TToken
 
 	ctx := scannerFromStreaming(session)
 	lexemes, err := lexerPeekRangeCore(
-		lexer, ctx, session.currentState, session.newlineDetector,
+		lexer, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
 		session.currentLine, session.currentColumn, session.tokenNumber, count,
 	)
 
@@ -1529,7 +1562,7 @@ func LexerPeekRangeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRol
 
 	ctx := scannerFromStreamingSimulated(session)
 	lexemes, err := lexerPeekRangeCore(
-		lexer, ctx, session.currentState, session.newlineDetector,
+		lexer, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
 		session.currentLine, session.currentColumn, session.tokenNumber, count,
 	)
 
@@ -1674,8 +1707,10 @@ func streamingNextFn[TObservation cmp.Ordered, TState, TToken comparable](
 func computePositionFromSlice[TObservation cmp.Ordered](
 	observations []TObservation,
 	newlineDetector NewlineDetector[TObservation],
+	advanceColumn ColumnAdvanceFn[TObservation],
 	startLine, startColumn int,
 ) (endLine, endColumn int) {
+
 	line := startLine
 	column := startColumn
 
@@ -1684,7 +1719,7 @@ func computePositionFromSlice[TObservation cmp.Ordered](
 			line++
 			column = 1
 		} else {
-			column++
+			column = advanceColumn(obs, column)
 		}
 	}
 
@@ -1971,6 +2006,7 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 	ctx scannerContext[TObservation],
 	lexerState TState,
 	newlineDetector NewlineDetector[TObservation],
+	columnAdvanceFn ColumnAdvanceFn[TObservation],
 	startLine, startCol, startToken int,
 	count int,
 ) ([]Lexeme[TObservation, TToken, TTokenRole], *LexingError[TObservation, TToken]) {
@@ -2021,6 +2057,7 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 			errLine, errCol := computePositionFromSlice(
 				ctx.slice(0, lexErr.Position-base),
 				newlineDetector,
+				columnAdvanceFn,
 				line,
 				col,
 			)
@@ -2072,6 +2109,7 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 		endLine, endCol := computePositionFromSlice(
 			raw,
 			newlineDetector,
+			columnAdvanceFn,
 			line,
 			col,
 		)
