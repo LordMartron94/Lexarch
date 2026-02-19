@@ -444,6 +444,8 @@ type Lexeme[TObservation cmp.Ordered, TToken, TTokenRole comparable] struct {
 
 	Start, End int
 
+	// StartColumn inclusive, EndColumn exclusive (half-open span)
+
 	// Position information (1-indexed)
 	StartLine   int // Line number where token starts
 	StartColumn int // Column number where token starts
