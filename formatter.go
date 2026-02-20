@@ -78,15 +78,7 @@ func RuneFormatterCreate(cfg RuneFormatterConfig) ObservationFormatter[rune] {
 			return ""
 		}
 
-		var b strings.Builder
-
-		// rough capacity guess — avoids reallocs in most cases
-		b.Grow(len(rs) * 2)
-
-		for _, r := range rs {
-			b.WriteString(formatOne(r))
-		}
-		return b.String()
+		return string(rs)
 	}
 
 	return ObservationFormatter[rune]{
