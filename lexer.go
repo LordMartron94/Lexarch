@@ -18,7 +18,10 @@ import (
 // ------------------------------------------------------ ERRORS
 
 /* ObservationFormatter turns an observation into a string. */
-type ObservationFormatter[TObservation any] func(obs TObservation) string
+type ObservationFormatter[TObservation cmp.Ordered] struct {
+	FormatOne  func(observation TObservation) string
+	FormatMany func(observations []TObservation) string
+}
 
 type LexingError[TObservation cmp.Ordered, TToken comparable] struct {
 	Position int
@@ -78,11 +81,6 @@ func (e *LexingError[TObs, TToken]) Error() string {
 		return "<nil lexing error>"
 	}
 
-	fmtObs := e.Formatter
-	if fmtObs == nil {
-		fmtObs = func(o TObs) string { return fmt.Sprintf("%v", o) }
-	}
-
 	switch e.Reason {
 
 	case LexErrUnexpectedEOF:
@@ -97,7 +95,7 @@ func (e *LexingError[TObs, TToken]) Error() string {
 			"unexpected EOF at line %d:%d (expected %s) (absolute position %d) [dfaState=%s]",
 			e.StartLine,
 			e.StartColumn,
-			e.formatExpected(fmtObs),
+			e.formatExpected(e.Formatter.FormatOne),
 			e.Position,
 			stateStr,
 		)
@@ -113,10 +111,10 @@ func (e *LexingError[TObs, TToken]) Error() string {
 		if e.HasFound {
 			return fmt.Sprintf(
 				"unexpected %s at line %d:%d (expected %s) [dfaState=%s]",
-				fmtObs(e.Found),
+				e.Formatter.FormatOne(e.Found),
 				e.StartLine,
 				e.StartColumn,
-				e.formatExpected(fmtObs),
+				e.formatExpected(e.Formatter.FormatOne),
 				stateStr,
 			)
 		}
@@ -125,7 +123,7 @@ func (e *LexingError[TObs, TToken]) Error() string {
 			"invalid input at line %d:%d (expected %s) [dfaState=%s]",
 			e.StartLine,
 			e.StartColumn,
-			e.formatExpected(fmtObs),
+			e.formatExpected(e.Formatter.FormatOne),
 			stateStr,
 		)
 
@@ -454,6 +452,8 @@ type Lexeme[TObservation cmp.Ordered, TToken, TTokenRole comparable] struct {
 	TokenNumber int // Sequence number of this token
 
 	Role TTokenRole
+
+	formatter ObservationFormatter[TObservation]
 }
 
 func (l Lexeme[TObservation, TToken, TTokenRole]) DebugString(
@@ -476,7 +476,7 @@ func (l Lexeme[TObservation, TToken, TTokenRole]) DebugString(
 		roleStr = fmt.Sprintf("%v", l.Role)
 	}
 
-	rawStr := l.FormatRaw(fmtObs)
+	rawStr := l.FormatRawDiagnostic()
 
 	return fmt.Sprintf(
 		"Lexeme{token=%s, role=%s, raw=%q, span=[%d:%d], pos=(%d:%d → %d:%d), #=%d}",
@@ -493,21 +493,12 @@ func (l Lexeme[TObservation, TToken, TTokenRole]) DebugString(
 	)
 }
 
-func (l *Lexeme[TObservation, TToken, TTokenRole]) FormatRaw(
-	fmtObs func(TObservation) string,
-) string {
+func (l *Lexeme[TObs, TToken, TTokenRole]) FormatRawDiagnostic() string {
 	if len(l.Raw) == 0 {
 		return ""
 	}
-	if fmtObs == nil {
-		return fmt.Sprintf("%v", l.Raw)
-	}
 
-	var b strings.Builder
-	for _, o := range l.Raw {
-		b.WriteString(fmtObs(o))
-	}
-	return b.String()
+	return l.formatter.FormatMany(l.Raw)
 }
 
 /*
@@ -1257,6 +1248,7 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 	)
 
 	lex := lexemeBuild(
+		lexer.formatter,
 		token,
 		raw,
 		start,
@@ -1479,7 +1471,7 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 
 	endLine, endCol := computePositionFromSlice(raw, session.newlineDetector, session.columnAdvanceFn, session.currentLine, session.currentColumn)
 
-	lex := lexemeBuild(token, raw, session.absPos, session.absPos+endRel, session.currentLine, session.currentColumn, endLine, endCol, session.tokenNumber, role)
+	lex := lexemeBuild(lexer.formatter, token, raw, session.absPos, session.absPos+endRel, session.currentLine, session.currentColumn, endLine, endCol, session.tokenNumber, role)
 
 	session.tokenNumber++
 	session.absPos += endRel
@@ -1646,6 +1638,7 @@ func lexerGetDFAAndResolution[TObservation cmp.Ordered, TState, TToken, TTokenRo
 }
 
 func lexemeBuild[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+	observationFormatter ObservationFormatter[TObservation],
 	token TToken,
 	raw []TObservation,
 	start, end int,
@@ -1655,6 +1648,7 @@ func lexemeBuild[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	role TTokenRole,
 ) Lexeme[TObservation, TToken, TTokenRole] {
 	return Lexeme[TObservation, TToken, TTokenRole]{
+		formatter:   observationFormatter,
 		Token:       token,
 		Raw:         raw,
 		Start:       start,
@@ -2117,6 +2111,7 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 		)
 
 		lex := lexemeBuild(
+			lexer.formatter,
 			token,
 			raw,
 			start,

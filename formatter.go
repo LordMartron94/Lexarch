@@ -1,6 +1,9 @@
 package lexarch
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 type RuneFormatStyle int
 
@@ -19,7 +22,6 @@ type RuneFormatterConfig struct {
 }
 
 func RuneFormatterCreate(cfg RuneFormatterConfig) ObservationFormatter[rune] {
-
 	min := cfg.MinPrintable
 	max := cfg.MaxPrintable
 
@@ -30,8 +32,7 @@ func RuneFormatterCreate(cfg RuneFormatterConfig) ObservationFormatter[rune] {
 		max = 126
 	}
 
-	return func(r rune) string {
-
+	formatOne := func(r rune) string {
 		switch r {
 		case '\n':
 			return `\n`
@@ -71,6 +72,27 @@ func RuneFormatterCreate(cfg RuneFormatterConfig) ObservationFormatter[rune] {
 			return fmt.Sprintf("U+%04X", r)
 		}
 	}
+
+	formatMany := func(rs []rune) string {
+		if len(rs) == 0 {
+			return ""
+		}
+
+		var b strings.Builder
+
+		// rough capacity guess — avoids reallocs in most cases
+		b.Grow(len(rs) * 2)
+
+		for _, r := range rs {
+			b.WriteString(formatOne(r))
+		}
+		return b.String()
+	}
+
+	return ObservationFormatter[rune]{
+		FormatOne:  formatOne,
+		FormatMany: formatMany,
+	}
 }
 
 func RuneFormatterDefault() ObservationFormatter[rune] {
@@ -81,8 +103,25 @@ func RuneFormatterDefault() ObservationFormatter[rune] {
 
 func ByteFormatterCreate(cfg RuneFormatterConfig) ObservationFormatter[byte] {
 	rf := RuneFormatterCreate(cfg)
-	return func(b byte) string {
-		return rf(rune(b))
+
+	return ObservationFormatter[byte]{
+		FormatOne: func(b byte) string {
+			return rf.FormatOne(rune(b))
+		},
+
+		FormatMany: func(bs []byte) string {
+			if len(bs) == 0 {
+				return ""
+			}
+
+			var bld strings.Builder
+			bld.Grow(len(bs) * 2)
+
+			for _, b := range bs {
+				bld.WriteString(rf.FormatOne(rune(b)))
+			}
+			return bld.String()
+		},
 	}
 }
 
