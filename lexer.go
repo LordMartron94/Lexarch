@@ -1830,8 +1830,6 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 
 			expected := autarch.DFAPossibleTransitions(dfa, state)
 
-			fmt.Printf("dead state reached with obs (scanCore): %v\n", obs)
-
 			return bestToken, bestRole, bestEnd, found, state, &LexingError[TObservation, TToken]{
 				Position:    pos,
 				Furthest:    furthestPos,
