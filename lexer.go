@@ -411,6 +411,37 @@ func (l *LexingRuleset[TObservation, TToken, TTokenRole]) WithTokenResolution(
 	return l
 }
 
+/* LexerRuleReadOnly provides a readonly view into a lexing rule. */
+type LexerRuleReadOnly[TObservation cmp.Ordered, TToken, TTokenRole comparable] struct {
+	Pattern  pattern.RegulaAST[TObservation]
+	Token    TToken
+	Role     TTokenRole
+	Priority int
+}
+
+/* PatternToRegEx returns the rule's pattern as a RegEx string. */
+func (l *LexerRuleReadOnly[TObservation, TToken, TTokenRole]) PatternToRegEx() (string, error) {
+	return l.Pattern.ToRegEx()
+}
+
+/*
+GetRules returns the currently precompiled rules in a readonly fashion.
+*/
+func (l *LexingRuleset[TObservation, TToken, TTokenRole]) GetRules() []LexerRuleReadOnly[TObservation, TToken, TTokenRole] {
+	out := make([]LexerRuleReadOnly[TObservation, TToken, TTokenRole], len(l.precompiledRules))
+
+	for i, precompiled := range l.precompiledRules {
+		out[i] = LexerRuleReadOnly[TObservation, TToken, TTokenRole]{
+			Pattern:  precompiled.pattern,
+			Token:    precompiled.token,
+			Role:     precompiled.role,
+			Priority: precompiled.priority,
+		}
+	}
+
+	return out
+}
+
 // ------------------------------------------------------ LEXER
 
 /*
@@ -457,7 +488,6 @@ type Lexeme[TObservation cmp.Ordered, TToken, TTokenRole comparable] struct {
 }
 
 func (l Lexeme[TObservation, TToken, TTokenRole]) DebugString(
-	fmtObs func(TObservation) string,
 	fmtToken func(TToken) string,
 	fmtRole func(TTokenRole) string,
 ) string {
