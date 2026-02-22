@@ -1,6 +1,7 @@
 package lexarch
 
 import (
+	"cmp"
 	"fmt"
 	ftesting "foundation/testing"
 	"memcore"
@@ -109,30 +110,36 @@ func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken, TokenRole], all
 		TokenResolutionStepPriority[TestToken],
 	)
 
-	lower := pattern.Class(pattern.Range('a', 'z'))
+	factory := pattern.RegulaASTFactoryCreate(
+		func(a, b rune) int {
+			return cmp.Compare(a, b)
+		},
+	)
+
+	lower := factory.Class(factory.Range('a', 'z'))
 
 	whitespace :=
-		pattern.AnyOf(
-			pattern.Literal(' '),
-			pattern.Literal('\n'),
-			pattern.Literal('\t'),
+		factory.AnyOf(
+			factory.Literal(' '),
+			factory.Literal('\n'),
+			factory.Literal('\t'),
 		).Plus()
 
 	word := lower.Plus()
-	keywordIf := pattern.Literal('i', 'f')
+	keywordIf := factory.Literal('i', 'f')
 
 	// ------------------------
 	// Quoted string pattern
 	// ------------------------
-	quote := pattern.Literal('"')
+	quote := factory.Literal('"')
 
-	notQuote := pattern.Class(
-		pattern.Range(0, '"'-1),
-		pattern.Range('"'+1, rune(0x10FFFF)),
+	notQuote := factory.Class(
+		factory.Range(0, '"'-1),
+		factory.Range('"'+1, rune(0x10FFFF)),
 	)
 
 	quotedString :=
-		pattern.Sequence(
+		factory.Sequence(
 			quote,
 			notQuote.Star(),
 			quote,

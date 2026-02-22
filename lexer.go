@@ -8,8 +8,6 @@ import (
 	"memarch"
 	"memcore"
 	"memforge"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"unicode"
@@ -1086,11 +1084,6 @@ func LexerDebugDFA[TObservation cmp.Ordered, TState, TToken, TTokenRole comparab
 	return autarch.DFADebugPrint(dfa, formatter)
 }
 
-var (
-	// Regex to extract lo and hi from the "gap:(lo,hi)" name string
-	gapRegex = regexp.MustCompile(`gap:\((.+),(.+)\)`)
-)
-
 /*
 LexerDebugFormatterCreateRune creates a default formatter for rune-based lexers that converts
 numeric symbol names to character representations and formats TokenOutcome structures.
@@ -1143,17 +1136,14 @@ func LexerDebugFormatterCreateRune[TState, TToken, TTokenRole comparable]() *aut
 				return fmt.Sprintf("Lit: %s", formatRune(*def.Observation))
 			}
 
-			matches := gapRegex.FindStringSubmatch(def.Name)
-			if len(matches) == 3 {
-				loVal, _ := strconv.ParseInt(matches[1], 10, 64)
-				hiVal, _ := strconv.ParseInt(matches[2], 10, 64)
-
-				if hiVal <= loVal+1 {
-					return fmt.Sprintf("Gap: (EMPTY) between %s and %s", formatRune(rune(loVal)), formatRune(rune(hiVal)))
+			if def.GapLo != nil && def.GapHi != nil {
+				if *def.GapHi <= *def.GapLo+1 {
+					return fmt.Sprintf("Gap: (EMPTY) between %s and %s", formatRune(*def.GapLo), formatRune(*def.GapHi))
 				}
 
-				return fmt.Sprintf("Gap: %s < ... < %s", formatRune(rune(loVal)), formatRune(rune(hiVal)))
+				return fmt.Sprintf("Gap: %s < ... < %s", formatRune(*def.GapLo), formatRune(*def.GapHi))
 			}
+
 			return def.Name
 		},
 
@@ -1836,7 +1826,7 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 
 		if !hasObs {
 			if strictEOF && !found {
-				expected := autarch.DFAPossibleTransitions(dfa, state)
+				expected := autarch.DFAAvailableSymbols(dfa, state)
 				if len(expected) > 0 {
 					return bestToken, bestRole, bestEnd, found, state, &LexingError[TObservation, TToken]{
 						Position:    pos,
@@ -1858,7 +1848,7 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 				break
 			}
 
-			expected := autarch.DFAPossibleTransitions(dfa, state)
+			expected := autarch.DFAAvailableSymbols(dfa, state)
 
 			return bestToken, bestRole, bestEnd, found, state, &LexingError[TObservation, TToken]{
 				Position:    pos,
@@ -2117,7 +2107,7 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 				StartColumn: col,
 				Found:       foundObs,
 				HasFound:    true,
-				Expected:    autarch.DFAPossibleTransitions(dfa, currentDFAState),
+				Expected:    autarch.DFAAvailableSymbols(dfa, currentDFAState),
 				Reason:      LexErrNoTransition,
 				DFAState:    currentDFAState,
 				HasDFAState: true,
