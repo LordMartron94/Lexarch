@@ -1023,7 +1023,7 @@ func RunesToBytesDefault() func(observations []rune) []byte {
 	}
 }
 
-//go:generate -type CompilerMode
+//go:generate stringer -type CompilerMode
 type CompilerMode int
 
 const (
