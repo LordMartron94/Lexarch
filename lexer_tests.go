@@ -44,7 +44,7 @@ const (
 // Test formatter
 // ============================================================
 
-func createTestFormatter() *autarch.DFADebugFormatter[rune, TokenOutcome[TestToken, TokenRole]] {
+func createTestFormatter() *autarch.DFADebugFormatter[rune, pattern.AnnotatedOutcome[TokenOutcome[TestToken, TokenRole]]] {
 
 	tokenNames := map[TestToken]string{
 		WhitespaceToken:   "WhitespaceToken",
@@ -61,15 +61,15 @@ func createTestFormatter() *autarch.DFADebugFormatter[rune, TokenOutcome[TestTok
 
 	baseFormatter := LexerDebugFormatterCreateRune[LexerState, TestToken, TokenRole]()
 
-	return &autarch.DFADebugFormatter[rune, TokenOutcome[TestToken, TokenRole]]{
+	return &autarch.DFADebugFormatter[rune, pattern.AnnotatedOutcome[TokenOutcome[TestToken, TokenRole]]]{
 		FormatSymbolName: baseFormatter.FormatSymbolName,
 		FormatSymbolID:   baseFormatter.FormatSymbolID,
-		FormatStateOutcome: func(outcome TokenOutcome[TestToken, TokenRole]) string {
-			name := tokenNames[outcome.Token]
+		FormatStateOutcome: func(outcome pattern.AnnotatedOutcome[TokenOutcome[TestToken, TokenRole]]) string {
+			name := tokenNames[outcome.Value.Token]
 			if name == "" {
-				name = fmt.Sprintf("Token(%d)", outcome.Token)
+				name = fmt.Sprintf("Token(%d)", outcome.Value.Token)
 			}
-			return fmt.Sprintf("{Token: %s, Priority: %d}", name, outcome.Priority)
+			return fmt.Sprintf("{Token: %s, Priority: %d}", name, outcome.Value.Priority)
 		},
 		FormatStateID: func(stateID uint64) string {
 			state := LexerState(stateID)

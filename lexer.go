@@ -948,7 +948,7 @@ Edge cases:
 - Multiple sessions can use the same lexer concurrently
 */
 type Lexer[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable] struct {
-	ruleSets         map[TState]*autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]]
+	ruleSets         map[TState]*autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]]
 	tokenResolutions map[TState]TokenResolutionStepFn[TToken]
 
 	dfaAllocator memcore.MarkRaw
@@ -1080,7 +1080,7 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 		return newSize
 	})
 
-	lexerRulesets := make(map[TState]*autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]])
+	lexerRulesets := make(map[TState]*autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]])
 	tokenResolutions := make(map[TState]TokenResolutionStepFn[TToken])
 
 	for state, ruleset := range inputRulesets {
@@ -1142,7 +1142,7 @@ Edge cases:
 func LexerDebugDFA[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	state TState,
-	formatter *autarch.DFADebugFormatter[TObservation, TokenOutcome[TToken, TTokenRole]],
+	formatter *autarch.DFADebugFormatter[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]],
 ) string {
 	dfa, ok := lexer.ruleSets[state]
 	if !ok {
@@ -1178,7 +1178,7 @@ Edge cases:
 - Falls back to numeric representation if parsing fails
 - Maintains table alignment with fixed-width formatting
 */
-func LexerDebugFormatterCreateRune[TState, TToken, TTokenRole comparable]() *autarch.DFADebugFormatter[rune, TokenOutcome[TToken, TTokenRole]] {
+func LexerDebugFormatterCreateRune[TState, TToken, TTokenRole comparable]() *autarch.DFADebugFormatter[rune, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]] {
 
 	// Helper to format a single rune beautifully
 	formatRune := func(r rune) string {
@@ -1198,7 +1198,7 @@ func LexerDebugFormatterCreateRune[TState, TToken, TTokenRole comparable]() *aut
 		}
 	}
 
-	return &autarch.DFADebugFormatter[rune, TokenOutcome[TToken, TTokenRole]]{
+	return &autarch.DFADebugFormatter[rune, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]]{
 		FormatSymbolName: func(symbolID uint64, def autarch.SymbolDefinition[rune]) string {
 			if def.Observation != nil {
 				return fmt.Sprintf("Lit: %s", formatRune(*def.Observation))
@@ -1215,8 +1215,8 @@ func LexerDebugFormatterCreateRune[TState, TToken, TTokenRole comparable]() *aut
 			return def.Name
 		},
 
-		FormatStateOutcome: func(outcome TokenOutcome[TToken, TTokenRole]) string {
-			return fmt.Sprintf("{Token: %v, Priority: %d}", outcome.Token, outcome.Priority)
+		FormatStateOutcome: func(outcome pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]) string {
+			return fmt.Sprintf("{Token: %v, Priority: %d}", outcome.Value.Token, outcome.Value.Priority)
 		},
 
 		FormatSymbolID: func(symbolID uint64) string {
@@ -1710,7 +1710,7 @@ func LexerAssertPeekStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRo
 func lexerGetDFAAndResolution[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	state TState,
-) (*autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]], TokenResolutionStepFn[TToken], error) {
+) (*autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]], TokenResolutionStepFn[TToken], error) {
 
 	dfa, ok := lexer.ruleSets[state]
 	if !ok {
@@ -1864,7 +1864,7 @@ func lexerBuildEOF[TObservation cmp.Ordered, TState, TToken, TTokenRole comparab
 }
 
 func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
-	dfa *autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]],
+	dfa *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]],
 	nextObservation func(int) (obs TObservation, ok bool, err error),
 	resolutionStep TokenResolutionStepFn[TToken],
 	strictEOF bool,
@@ -1937,9 +1937,9 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 
 		if outcome, ok := autarch.DFAStateOutcome(dfa, state); ok {
 			newBest, newEnd, updated := resolutionStep(
-				outcome.Token,
+				outcome.Value.Token,
 				pos+1,
-				outcome.Priority,
+				outcome.Value.Priority,
 				bestToken,
 				bestEnd,
 				bestPriority,
@@ -1948,8 +1948,8 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 			if updated {
 				bestToken = newBest
 				bestEnd = newEnd
-				bestPriority = outcome.Priority
-				bestRole = outcome.TokenRole
+				bestPriority = outcome.Value.Priority
+				bestRole = outcome.Value.TokenRole
 				found = true
 			}
 		}
@@ -1972,7 +1972,7 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 	successor pattern.SuccessorFn[TObservation],
 	toBytes func(observations []TObservation) []byte,
 	compiler pattern.RegulaToNFACompiler[TObservation, TokenOutcome[TToken, TTokenRole]],
-) *autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]] {
+) *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]] {
 	ctx := pattern.RegulaCreateSharedCompilationContext(
 		successor,
 		func(a, b TObservation) int {
@@ -2234,7 +2234,7 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 
 func scanOne[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	ctx scannerContext[TObservation],
-	dfa *autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]],
+	dfa *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]],
 	resolutionStep TokenResolutionStepFn[TToken],
 ) (token TToken, tokenRole TTokenRole, raw []TObservation, found bool, state uint64, err *LexingError[TObservation, TToken]) {
 
