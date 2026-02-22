@@ -1023,6 +1023,14 @@ func RunesToBytesDefault() func(observations []rune) []byte {
 	}
 }
 
+//go:generate -type CompilerMode
+type CompilerMode int
+
+const (
+	Thompson CompilerMode = iota + 1
+	Glushkov
+)
+
 /*
 LexerCreate compiles a set of rulesets into a ready-to-use lexer. Each state's ruleset is
 compiled to a minimized DFA for efficient token recognition. The compilation process:
@@ -1060,6 +1068,7 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 	scratchAllocationFn memarch.AllocationFn,
 	maxDFAAllocatorMemory memcore.MemoryUnitBytes,
 	observationCtx ObservationCTX[TObservation],
+	compilationMode CompilerMode,
 ) *Lexer[TObservation, TState, TToken, TTokenRole] {
 	dfaAllocator := memforge.DynamicLinearAllocatorCreateFunction(uint64(memcore.KiloByte), func(currentCap, neededCap uint64) uint64 {
 		newSize := max(currentCap*2, neededCap)
@@ -1075,11 +1084,19 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 	tokenResolutions := make(map[TState]TokenResolutionStepFn[TToken])
 
 	for state, ruleset := range inputRulesets {
+		var compiler pattern.RegulaToNFACompiler[TObservation, TokenOutcome[TToken, TTokenRole]]
+		switch compilationMode {
+		case Thompson:
+			compiler = pattern.RegulaCompileToNFAThompson
+		case Glushkov:
+			compiler = pattern.RegulaCompileToNFAGlushkov
+		default:
+			panic("unknown compilation mode")
+		}
+
 		compiled := lexingRulesetCompile(ruleset, scratchAllocationFn, func(sizeBytes, alignment uint64) memcore.MarkRaw {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(dfaAllocator, sizeBytes, alignment)
-		}, func(a, b TObservation) bool {
-			return a < b
-		}, observationCtx.successorFn, observationCtx.toBytes)
+		}, observationCtx.successorFn, observationCtx.toBytes, compiler)
 
 		lexerRulesets[state] = compiled
 
@@ -1952,9 +1969,9 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 	ruleset LexingRuleset[TObservation, TToken, TTokenRole],
 	scratchAllocFn memarch.AllocationFn,
 	dfaAllocFn memarch.AllocationFn,
-	isLessFn func(a, b TObservation) bool,
 	successor pattern.SuccessorFn[TObservation],
 	toBytes func(observations []TObservation) []byte,
+	compiler pattern.RegulaToNFACompiler[TObservation, TokenOutcome[TToken, TTokenRole]],
 ) *autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]] {
 	ctx := pattern.RegulaCreateSharedCompilationContext(
 		successor,
@@ -1975,7 +1992,7 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 		}
 	}
 
-	nfas, err := pattern.RegulaCompileToNFAThompson(scratchAllocFn, instructions, ctx)
+	nfas, err := compiler(scratchAllocFn, instructions, ctx)
 	if err != nil {
 		panic(fmt.Errorf("lexing ruleset error: %w", err))
 	}

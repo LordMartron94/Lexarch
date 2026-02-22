@@ -168,6 +168,7 @@ func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken, TokenRole], all
 			successorFn: LexarchRuneSuccessorFn(),
 			toBytes:     RunesToBytesDefault(),
 		},
+		Thompson,
 	)
 
 	fmt.Println("=== DFA Debug for NormalState ===")
