@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"unicode"
+	"unicode/utf8"
 )
 
 // ------------------------------------------------------ ERRORS
@@ -958,8 +959,22 @@ type Lexer[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable] stru
 
 /* ObservationCTX encapsulates the context for observation handling. */
 type ObservationCTX[TObservation cmp.Ordered] struct {
-	Formatter   ObservationFormatter[TObservation]
-	SuccessorFn pattern.SuccessorFn[TObservation]
+	formatter   ObservationFormatter[TObservation]
+	successorFn pattern.SuccessorFn[TObservation]
+
+	toBytes func(observations []TObservation) []byte
+}
+
+func ObservationCTXCreate[TObservation cmp.Ordered](
+	formatter ObservationFormatter[TObservation],
+	successorFn pattern.SuccessorFn[TObservation],
+	toBytes func(observations []TObservation) []byte,
+) ObservationCTX[TObservation] {
+	return ObservationCTX[TObservation]{
+		formatter:   formatter,
+		successorFn: successorFn,
+		toBytes:     toBytes,
+	}
 }
 
 /* LexarchRuneSuccessorFn creates a successor fn for rune. */
@@ -969,6 +984,42 @@ func LexarchRuneSuccessorFn() pattern.SuccessorFn[rune] {
 			return 0, false
 		}
 		return curr + 1, true
+	}
+}
+
+/*
+RunesToBytesDefault returns a UTF-8 encoder for rune observation streams.
+
+This provides a canonical, lossless projection from abstract rune symbols
+to concrete byte representation suitable for hashing, debugging, and
+automaton compilation internals.
+
+Properties:
+  - Unicode-correct
+  - Deterministic
+  - Order-preserving
+  - Minimal encoding (UTF-8)
+
+Time complexity: O(n)
+Space complexity: O(n)
+*/
+func RunesToBytesDefault() func(observations []rune) []byte {
+	return func(observations []rune) []byte {
+		if len(observations) == 0 {
+			return nil
+		}
+
+		// Worst case: 4 bytes per rune (UTF-8 max width)
+		buf := make([]byte, 0, len(observations)*utf8.UTFMax)
+
+		var tmp [utf8.UTFMax]byte
+
+		for _, r := range observations {
+			n := utf8.EncodeRune(tmp[:], r)
+			buf = append(buf, tmp[:n]...)
+		}
+
+		return buf
 	}
 }
 
@@ -1028,7 +1079,7 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 			return memforge.DynamicLinearAllocatorMallocUnsafe(dfaAllocator, sizeBytes, alignment)
 		}, func(a, b TObservation) bool {
 			return a < b
-		}, observationCtx.SuccessorFn)
+		}, observationCtx.successorFn, observationCtx.toBytes)
 
 		lexerRulesets[state] = compiled
 
@@ -1045,7 +1096,7 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 		tokenResolutions: tokenResolutions,
 		dfaAllocator:     dfaAllocator,
 		eofToken:         eofToken,
-		formatter:        observationCtx.Formatter,
+		formatter:        observationCtx.formatter,
 	}
 }
 
@@ -1903,33 +1954,43 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 	dfaAllocFn memarch.AllocationFn,
 	isLessFn func(a, b TObservation) bool,
 	successor pattern.SuccessorFn[TObservation],
+	toBytes func(observations []TObservation) []byte,
 ) *autarch.DFA[TObservation, TokenOutcome[TToken, TTokenRole]] {
-	ctx := pattern.RegulaCreateSharedCompilationContext[TObservation]()
-
-	for _, rule := range ruleset.precompiledRules {
-		ctx.CollectPattern(&rule.pattern)
-	}
-
-	ctx.BuildAlphabet(
-		isLessFn,
+	ctx := pattern.RegulaCreateSharedCompilationContext(
 		successor,
+		func(a, b TObservation) int {
+			return cmp.Compare(a, b)
+		},
+		pattern.ObservationFormatter[TObservation]{
+			ToBytes: toBytes,
+		},
 	)
 
-	initialRule := ruleset.precompiledRules[0]
-	initialOutcome := TokenOutcome[TToken, TTokenRole]{Token: initialRule.token, Priority: initialRule.priority, TokenRole: initialRule.role}
-	nfa := pattern.RegulaCompileToNFAWithBuilder(scratchAllocFn, initialRule.pattern, ctx, initialOutcome)
-
+	instructions := make([]pattern.RegulaNFAInstruction[TObservation, TokenOutcome[TToken, TTokenRole]], len(ruleset.precompiledRules))
 	for i, rule := range ruleset.precompiledRules {
+		ruleOutcome := TokenOutcome[TToken, TTokenRole]{Token: rule.token, Priority: rule.priority, TokenRole: rule.role}
+		instructions[i] = pattern.RegulaNFAInstruction[TObservation, TokenOutcome[TToken, TTokenRole]]{
+			Pattern: &rule.pattern,
+			Outcome: ruleOutcome,
+		}
+	}
+
+	nfas, err := pattern.RegulaCompileToNFAThompson(scratchAllocFn, instructions, ctx)
+	if err != nil {
+		panic(fmt.Errorf("lexing ruleset error: %w", err))
+	}
+
+	outNFA := nfas[0]
+
+	for i, generatedNFA := range nfas {
 		if i == 0 {
 			continue
 		}
 
-		ruleOutcome := TokenOutcome[TToken, TTokenRole]{Token: rule.token, Priority: rule.priority, TokenRole: rule.role}
-		ruleNFA := pattern.RegulaCompileToNFAWithBuilder(scratchAllocFn, rule.pattern, ctx, ruleOutcome)
-		nfa = autarch.NFAMergeOr(nfa, ruleNFA, scratchAllocFn)
+		outNFA = autarch.NFAMergeOr(outNFA, generatedNFA, scratchAllocFn)
 	}
 
-	dfa := autarch.NFAToDFA(nfa, 1*memcore.KiloByte, 1*memcore.GigaByte, dfaAllocFn, nil)
+	dfa := autarch.NFAToDFA(outNFA, 1*memcore.KiloByte, 1*memcore.GigaByte, dfaAllocFn, nil)
 	minimizedDFA := autarch.DFAMinimize(dfa, dfaAllocFn, 1*memcore.KiloByte, 1*memcore.GigaByte)
 	return minimizedDFA
 }

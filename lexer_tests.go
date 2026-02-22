@@ -164,8 +164,9 @@ func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken, TokenRole], all
 		},
 		memcore.GigaByte,
 		ObservationCTX[rune]{
-			Formatter:   RuneFormatterDefault(),
-			SuccessorFn: LexarchRuneSuccessorFn(),
+			formatter:   RuneFormatterDefault(),
+			successorFn: LexarchRuneSuccessorFn(),
+			toBytes:     RunesToBytesDefault(),
 		},
 	)
 
