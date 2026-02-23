@@ -2008,7 +2008,13 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 	}
 
 	dfa := autarch.NFAToDFA(outNFA, 1*memcore.KiloByte, 1*memcore.GigaByte, dfaAllocFn, nil)
-	minimizedDFA := autarch.DFAMinimize(dfa, dfaAllocFn, 1*memcore.KiloByte, 1*memcore.GigaByte)
+	minimizedDFA := autarch.DFAMinimize(
+		dfa,
+		dfaAllocFn,
+		1*memcore.KiloByte, 1*memcore.GigaByte,
+		func(out pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]) pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]] {
+			return out
+		})
 	return minimizedDFA
 }
 
