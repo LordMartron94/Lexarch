@@ -951,8 +951,10 @@ type Lexer[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable] stru
 	ruleSets         map[TState]*autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]]
 	tokenResolutions map[TState]TokenResolutionStepFn[TToken]
 
+	nonTerminalOutcome TokenOutcome[TToken, TTokenRole]
+
 	dfaAllocator memcore.MarkRaw
-	eofToken     TToken
+	eofToken    TToken
 
 	formatter ObservationFormatter[TObservation]
 }
@@ -1094,9 +1096,11 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 			panic("unknown compilation mode")
 		}
 
+		var nonTerminalOutcome TokenOutcome[TToken, TTokenRole]
+
 		compiled := lexingRulesetCompile(ruleset, scratchAllocationFn, func(sizeBytes, alignment uint64) memcore.MarkRaw {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(dfaAllocator, sizeBytes, alignment)
-		}, observationCtx.successorFn, observationCtx.toBytes, compiler)
+		}, observationCtx.successorFn, observationCtx.toBytes, compiler, nonTerminalOutcome)
 
 		lexerRulesets[state] = compiled
 
@@ -1109,11 +1113,12 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 	}
 
 	return &Lexer[TObservation, TState, TToken, TTokenRole]{
-		ruleSets:         lexerRulesets,
-		tokenResolutions: tokenResolutions,
-		dfaAllocator:     dfaAllocator,
-		eofToken:         eofToken,
-		formatter:        observationCtx.formatter,
+		ruleSets:           lexerRulesets,
+		tokenResolutions:   tokenResolutions,
+		nonTerminalOutcome: TokenOutcome[TToken, TTokenRole]{},
+		dfaAllocator:       dfaAllocator,
+		eofToken:           eofToken,
+		formatter:          observationCtx.formatter,
 	}
 }
 
@@ -1299,7 +1304,7 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 		return session.input[pos], true, nil
 	}
 
-	token, tokenRole, endRel, found, _, lexErr := scanCore(dfa, next, resolutionStep, true)
+	token, tokenRole, endRel, found, _, lexErr := scanCore(dfa, next, resolutionStep, true, lexer.nonTerminalOutcome)
 	if lexErr != nil {
 		lexErr.Position = session.position + lexErr.Position
 		lexErr.Furthest = session.position + lexErr.Furthest
@@ -1540,7 +1545,7 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 	}
 
 	next := streamingNextFn(session)
-	token, role, endRel, found, _, lexErr := scanCore(dfa, next, resolutionStep, true)
+	token, role, endRel, found, _, lexErr := scanCore(dfa, next, resolutionStep, true, lexer.nonTerminalOutcome)
 
 	if lexErr != nil {
 		lexErr.Formatter = lexer.formatter
@@ -1868,6 +1873,7 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	nextObservation func(int) (obs TObservation, ok bool, err error),
 	resolutionStep TokenResolutionStepFn[TToken],
 	strictEOF bool,
+	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
 ) (bestToken TToken, role TTokenRole, bestEnd int, found bool, dfaState uint64, lexErr *LexingError[TObservation, TToken]) {
 
 	cursor := autarch.DFACursorGet(dfa)
@@ -1935,7 +1941,7 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 		// update furthest progress
 		furthestPos = pos + 1
 
-		if outcome, ok := autarch.DFAStateOutcome(dfa, state); ok {
+		if outcome, ok := autarch.DFAStateOutcome(dfa, state); ok && outcome.Value != nonTerminalOutcome {
 			newBest, newEnd, updated := resolutionStep(
 				outcome.Value.Token,
 				pos+1,
@@ -1972,6 +1978,7 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 	successor pattern.SuccessorFn[TObservation],
 	toBytes func(observations []TObservation) []byte,
 	compiler pattern.RegulaToNFACompiler[TObservation, TokenOutcome[TToken, TTokenRole]],
+	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
 ) *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]] {
 	ctx := pattern.RegulaCreateSharedCompilationContext(
 		successor,
@@ -1992,7 +1999,7 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 		}
 	}
 
-	nfas, err := compiler(scratchAllocFn, instructions, ctx)
+	nfas, err := compiler(scratchAllocFn, instructions, ctx, nonTerminalOutcome)
 	if err != nil {
 		panic(fmt.Errorf("lexing ruleset error: %w", err))
 	}
@@ -2139,7 +2146,7 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 			break
 		}
 
-		token, tokenRole, raw, found, currentDFAState, lexErr := scanOne(ctx, dfa, resolutionStep)
+		token, tokenRole, raw, found, currentDFAState, lexErr := scanOne(ctx, dfa, resolutionStep, lexer.nonTerminalOutcome)
 
 		// =====================================================
 		// scanOne produced structured error
@@ -2242,9 +2249,10 @@ func scanOne[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	ctx scannerContext[TObservation],
 	dfa *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]],
 	resolutionStep TokenResolutionStepFn[TToken],
+	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
 ) (token TToken, tokenRole TTokenRole, raw []TObservation, found bool, state uint64, err *LexingError[TObservation, TToken]) {
 
-	token, role, endRel, found, state, lexErr := scanCore(dfa, ctx.next, resolutionStep, false)
+	token, role, endRel, found, state, lexErr := scanCore(dfa, ctx.next, resolutionStep, false, nonTerminalOutcome)
 
 	if lexErr != nil {
 		return token, role, nil, found, state, lexErr
