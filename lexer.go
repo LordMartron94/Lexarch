@@ -954,7 +954,7 @@ type Lexer[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable] stru
 	nonTerminalOutcome TokenOutcome[TToken, TTokenRole]
 
 	dfaAllocator memcore.MarkRaw
-	eofToken    TToken
+	eofToken     TToken
 
 	formatter ObservationFormatter[TObservation]
 }
@@ -1980,7 +1980,7 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 	compiler pattern.RegulaToNFACompiler[TObservation, TokenOutcome[TToken, TTokenRole]],
 	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
 ) *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]] {
-	ctx := pattern.RegulaCreateSharedCompilationContext(
+	ctx := pattern.CreateSharedCompilationContext[TObservation, pattern.RegulaAST[TObservation]](
 		successor,
 		func(a, b TObservation) int {
 			return cmp.Compare(a, b)
@@ -1990,10 +1990,10 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 		},
 	)
 
-	instructions := make([]pattern.RegulaNFAInstruction[TObservation, TokenOutcome[TToken, TTokenRole]], len(ruleset.precompiledRules))
+	instructions := make([]pattern.PatternCompilationInstruction[TObservation, TokenOutcome[TToken, TTokenRole], pattern.RegulaAST[TObservation]], len(ruleset.precompiledRules))
 	for i, rule := range ruleset.precompiledRules {
 		ruleOutcome := TokenOutcome[TToken, TTokenRole]{Token: rule.token, Priority: rule.priority, TokenRole: rule.role}
-		instructions[i] = pattern.RegulaNFAInstruction[TObservation, TokenOutcome[TToken, TTokenRole]]{
+		instructions[i] = pattern.PatternCompilationInstruction[TObservation, TokenOutcome[TToken, TTokenRole], pattern.RegulaAST[TObservation]]{
 			Pattern: &rule.pattern,
 			Outcome: ruleOutcome,
 		}
