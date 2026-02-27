@@ -5,12 +5,12 @@ import (
 	"autarch/pattern"
 	"cmp"
 	"fmt"
+	"foundation/domain"
 	"memarch"
 	"memcore"
 	"memforge"
 	"strings"
 	"sync/atomic"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -961,32 +961,26 @@ type Lexer[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable] stru
 
 /* ObservationCTX encapsulates the context for observation handling. */
 type ObservationCTX[TObservation cmp.Ordered] struct {
-	formatter   ObservationFormatter[TObservation]
-	successorFn pattern.SuccessorFn[TObservation]
-
-	toBytes func(observations []TObservation) []byte
+	formatter          ObservationFormatter[TObservation]
+	observationDomain  *domain.DiscreteDomain[TObservation]
+	toBytes            func(observations []TObservation) []byte
 }
 
 func ObservationCTXCreate[TObservation cmp.Ordered](
 	formatter ObservationFormatter[TObservation],
-	successorFn pattern.SuccessorFn[TObservation],
+	observationDomain *domain.DiscreteDomain[TObservation],
 	toBytes func(observations []TObservation) []byte,
 ) ObservationCTX[TObservation] {
 	return ObservationCTX[TObservation]{
-		formatter:   formatter,
-		successorFn: successorFn,
-		toBytes:     toBytes,
+		formatter:         formatter,
+		observationDomain: observationDomain,
+		toBytes:           toBytes,
 	}
 }
 
-/* LexarchRuneSuccessorFn creates a successor fn for rune. */
-func LexarchRuneSuccessorFn() pattern.SuccessorFn[rune] {
-	return func(curr rune) (next rune, exists bool) {
-		if curr >= unicode.MaxRune {
-			return 0, false
-		}
-		return curr + 1, true
-	}
+/* LexarchRuneDomain returns the canonical discrete domain for rune observations (Unicode code points). */
+func LexarchRuneDomain() *domain.DiscreteDomain[rune] {
+	return domain.DiscreteDomainRuneCreate()
 }
 
 /*
@@ -1100,7 +1094,7 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 
 		compiled := lexingRulesetCompile(ruleset, scratchAllocationFn, func(sizeBytes, alignment uint64) memcore.MarkRaw {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(dfaAllocator, sizeBytes, alignment)
-		}, observationCtx.successorFn, observationCtx.toBytes, compiler, nonTerminalOutcome)
+		}, observationCtx.observationDomain, observationCtx.toBytes, compiler, nonTerminalOutcome)
 
 		lexerRulesets[state] = compiled
 
@@ -1975,16 +1969,13 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 	ruleset LexingRuleset[TObservation, TToken, TTokenRole],
 	scratchAllocFn memarch.AllocationFn,
 	dfaAllocFn memarch.AllocationFn,
-	successor pattern.SuccessorFn[TObservation],
+	observationDomain *domain.DiscreteDomain[TObservation],
 	toBytes func(observations []TObservation) []byte,
 	compiler pattern.RegulaToNFACompiler[TObservation, TokenOutcome[TToken, TTokenRole]],
 	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
 ) *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]] {
 	ctx := pattern.CreateSharedCompilationContext[TObservation, pattern.RegulaAST[TObservation]](
-		successor,
-		func(a, b TObservation) int {
-			return cmp.Compare(a, b)
-		},
+		observationDomain,
 		pattern.ObservationFormatter[TObservation]{
 			ToBytes: toBytes,
 		},

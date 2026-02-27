@@ -1,7 +1,6 @@
 package lexarch
 
 import (
-	"cmp"
 	"fmt"
 	ftesting "foundation/testing"
 	"memcore"
@@ -110,11 +109,7 @@ func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken, TokenRole], all
 		TokenResolutionStepPriority[TestToken],
 	)
 
-	factory := pattern.RegulaASTFactoryCreate(
-		func(a, b rune) int {
-			return cmp.Compare(a, b)
-		},
-	)
+	factory := pattern.RegulaASTFactoryCreate(LexarchRuneDomain())
 
 	lower := factory.Class(factory.Range('a', 'z'))
 
@@ -164,9 +159,9 @@ func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken, TokenRole], all
 		},
 		memcore.GigaByte,
 		ObservationCTX[rune]{
-			formatter:   RuneFormatterDefault(),
-			successorFn: LexarchRuneSuccessorFn(),
-			toBytes:     RunesToBytesDefault(),
+			formatter:         RuneFormatterDefault(),
+			observationDomain: LexarchRuneDomain(),
+			toBytes:           RunesToBytesDefault(),
 		},
 		Thompson,
 	)
