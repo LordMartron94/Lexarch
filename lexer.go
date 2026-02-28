@@ -283,6 +283,8 @@ Edge cases:
 type LexingRuleset[TObservation cmp.Ordered, TToken, TTokenRole comparable] struct {
 	precompiledRules    []lexingRule[TObservation, TToken, TTokenRole]
 	tokenResolutionStep TokenResolutionStepFn[TToken]
+
+	tokenPatternMapping map[TToken]pattern.RegulaAST[TObservation]
 }
 
 /*
@@ -306,6 +308,7 @@ Edge cases:
 - Order of rule addition matters for longest match resolution
 */
 func (l *LexingRuleset[TObservation, TToken, TTokenRole]) WithRule(pattern pattern.RegulaAST[TObservation], token TToken, role TTokenRole) {
+	l.tokenPatternMapping[token] = pattern
 	l.precompiledRules = append(l.precompiledRules, lexingRule[TObservation, TToken, TTokenRole]{
 		pattern:  pattern,
 		token:    token,
@@ -342,12 +345,18 @@ func (l *LexingRuleset[TObservation, TToken, TTokenRole]) WithRulePriority(
 	role TTokenRole,
 	priority int,
 ) {
+	l.tokenPatternMapping[token] = pattern
 	l.precompiledRules = append(l.precompiledRules, lexingRule[TObservation, TToken, TTokenRole]{
 		pattern:  pattern,
 		token:    token,
 		role:     role,
 		priority: priority,
 	})
+}
+
+func (l *LexingRuleset[TObservation, TToken, TTokenRole]) GetPattern(token TToken) (pattern.RegulaAST[TObservation], bool) {
+	pattern, ok := l.tokenPatternMapping[token]
+	return pattern, ok
 }
 
 /*
@@ -377,6 +386,7 @@ func LexingRulesetCreate[TObservation cmp.Ordered, TToken, TTokenRole comparable
 	return &LexingRuleset[TObservation, TToken, TTokenRole]{
 		precompiledRules:    make([]lexingRule[TObservation, TToken, TTokenRole], 0),
 		tokenResolutionStep: tokenResolutionStep,
+		tokenPatternMapping: make(map[TToken]pattern.RegulaAST[TObservation]),
 	}
 }
 
@@ -961,9 +971,9 @@ type Lexer[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable] stru
 
 /* ObservationCTX encapsulates the context for observation handling. */
 type ObservationCTX[TObservation cmp.Ordered] struct {
-	formatter          ObservationFormatter[TObservation]
-	observationDomain  *domain.DiscreteDomain[TObservation]
-	toBytes            func(observations []TObservation) []byte
+	formatter         ObservationFormatter[TObservation]
+	observationDomain *domain.DiscreteDomain[TObservation]
+	toBytes           func(observations []TObservation) []byte
 }
 
 func ObservationCTXCreate[TObservation cmp.Ordered](
