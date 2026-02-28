@@ -61,18 +61,18 @@ The library integrates with:
 
 ### Ruleset Definition
 
-#### `LexingRulesetCreate[TObservation, TToken](tokenResolutionStep TokenResolutionStepFn[TToken]) *LexingRuleset`
+#### `LexingRulesetCreate[TObservation, TToken, TTokenRole](tokenResolutionStep TokenResolutionStepFn[TToken]) *LexingRuleset`
 
 Creates a new empty ruleset ready for pattern-to-token mappings. The `tokenResolutionStep` parameter
 specifies how to resolve conflicts when multiple tokens match at the same position using inline resolution.
 If `nil`, defaults to `TokenResolutionStepLongest` (longest match). The inline resolution API eliminates
 allocations in the hot path by updating the best match incrementally during scanning.
 
-#### `WithRule(pattern RegulaAST[TObservation], token TToken)`
+#### `WithRule(pattern RegulaAST[TObservation], token TToken, role TTokenRole)`
 
-Adds a pattern-to-token mapping to the ruleset. The pattern defines what input sequence matches this token.
+Adds a pattern-to-token mapping to the ruleset. The pattern defines what input sequence matches this token; the role is stored in each produced Lexeme.
 
-#### `WithRulePriority(pattern RegulaAST[TObservation], token TToken, priority int)`
+#### `WithRulePriority(pattern RegulaAST[TObservation], token TToken, role TTokenRole, priority int)`
 
 Adds a pattern-to-token mapping with an explicit priority. Higher priority values are preferred during
 priority-based resolution. Priority is only used with priority-based resolution functions.
@@ -87,33 +87,29 @@ multiple tokens match at the same position using inline resolution (zero allocat
 ```go
 import "autarch/pattern"
 
-// Default resolution (longest match)
-ruleset := lexarch.LexingRulesetCreate[rune, TokenType](nil)
-ruleset.WithRule(pattern.Literal('i', 'f'), TokenIf)
-ruleset.WithRule(pattern.Literal('e', 'l', 's', 'e'), TokenElse)
-ruleset.WithRule(pattern.Class(pattern.Range('a', 'z')).Plus(), TokenIdentifier)
-ruleset.WithRule(pattern.Class(pattern.Range('0', '9')).Plus(), TokenNumber)
+// Default resolution (longest match); role type can be int or your role type
+ruleset := lexarch.LexingRulesetCreate[rune, TokenType, TokenRole](nil)
+ruleset.WithRule(pattern.Literal('i', 'f'), TokenIf, RoleKeyword)
+ruleset.WithRule(pattern.Literal('e', 'l', 's', 'e'), TokenElse, RoleKeyword)
+ruleset.WithRule(pattern.Class(pattern.Range('a', 'z')).Plus(), TokenIdentifier, RoleIdentifier)
+ruleset.WithRule(pattern.Class(pattern.Range('0', '9')).Plus(), TokenNumber, RoleLiteral)
 
 // Custom resolution (first match)
-rulesetFirst := lexarch.LexingRulesetCreate[rune, TokenType](lexarch.TokenResolutionStepFirst[TokenType])
-rulesetFirst.WithRule(pattern.Literal('i', 'f'), TokenIf)
-
-// Shortest match resolution
-rulesetShortest := lexarch.LexingRulesetCreate[rune, TokenType](lexarch.TokenResolutionStepShortest[TokenType])
-rulesetShortest.WithRule(pattern.Class(pattern.Range('a', 'z')).Plus(), TokenIdentifier)
+rulesetFirst := lexarch.LexingRulesetCreate[rune, TokenType, TokenRole](lexarch.TokenResolutionStepFirst[TokenType])
+rulesetFirst.WithRule(pattern.Literal('i', 'f'), TokenIf, RoleKeyword)
 
 // Priority-based resolution
-rulesetPriority := lexarch.LexingRulesetCreate[rune, TokenType](lexarch.TokenResolutionStepPriority[TokenType])
-rulesetPriority.WithRulePriority(pattern.Literal('i', 'f'), TokenIf, 10) // Higher priority
-rulesetPriority.WithRule(pattern.Class(pattern.Range('a', 'z')).Plus(), TokenIdentifier) // Default priority (0)
+rulesetPriority := lexarch.LexingRulesetCreate[rune, TokenType, TokenRole](lexarch.TokenResolutionStepPriority[TokenType])
+rulesetPriority.WithRulePriority(pattern.Literal('i', 'f'), TokenIf, RoleKeyword, 10)
+rulesetPriority.WithRule(pattern.Class(pattern.Range('a', 'z')).Plus(), TokenIdentifier, RoleIdentifier)
 ```
 
 ### Lexer Creation
 
-#### `LexerCreate[TObservation, TState, TToken](inputRulesets map[TState]LexingRuleset, errorToken TToken, eofToken TToken, scratchAllocationFn AllocationFn, maxDFAAllocatorMemory MemoryUnitBytes) *Lexer`
+#### `LexerCreate[TObservation, TState, TToken, TTokenRole](inputRulesets map[TState]LexingRuleset, eofToken TToken, scratchAllocationFn AllocationFn, maxDFAAllocatorMemory MemoryUnitBytes, observationCtx ObservationCTX[TObservation], compilationMode CompilerMode) *Lexer`
 
 Compiles a set of rulesets into a ready-to-use lexer. Each state's ruleset is compiled to a minimized DFA.
-The `eofToken` is returned when the end of input is reached during tokenization.
+The `eofToken` is returned when the end of input is reached. `observationCtx` provides observation formatting and domain/toBytes for compilation; use `ObservationCTXCreate(formatter, domain, toBytes)`. `compilationMode` is `lexarch.Thompson` or `lexarch.Glushkov` for NFA construction.
 
 **Example:**
 
@@ -121,6 +117,10 @@ The `eofToken` is returned when the end of input is reached during tokenization.
 import (
     "memarch"
     "memcore"
+    "memforge"
+    "lexarch"
+    "autarch/pattern"
+    "foundation/domain"
 )
 
 type LexerState int
@@ -140,25 +140,38 @@ const (
     TokenNumber
 )
 
-normalRules := lexarch.LexingRulesetCreate[rune, TokenType](nil) // Default: longest match
-normalRules.WithRule(pattern.Literal('i', 'f'), TokenIf)
-normalRules.WithRule(pattern.Class(pattern.Range('a', 'z')).Plus(), TokenIdentifier)
+type TokenRole int
+const (
+    RoleKeyword TokenRole = iota
+    RoleIdentifier
+    RoleLiteral
+)
 
-stringRules := lexarch.LexingRulesetCreate[rune, TokenType](nil) // Default: longest match
-stringRules.WithRule(pattern.Class(pattern.Range('a', 'z'), pattern.Range('A', 'Z')).Star(), TokenStringContent)
+normalRules := lexarch.LexingRulesetCreate[rune, TokenType, TokenRole](nil)
+normalRules.WithRule(pattern.Literal('i', 'f'), TokenIf, RoleKeyword)
+normalRules.WithRule(pattern.Class(pattern.Range('a', 'z')).Plus(), TokenIdentifier, RoleIdentifier)
 
-rulesets := map[LexerState]lexarch.LexingRuleset[rune, TokenType]{
-    StateNormal: *normalRules,
-    StateString: *stringRules,
+stringRules := lexarch.LexingRulesetCreate[rune, TokenType, TokenRole](nil)
+stringRules.WithRule(pattern.Class(pattern.Range('a', 'z'), pattern.Range('A', 'Z')).Star(), TokenStringContent, RoleLiteral)
+
+rulesets := map[LexerState]*lexarch.LexingRuleset[rune, TokenType, TokenRole]{
+    StateNormal: normalRules,
+    StateString: stringRules,
 }
 
+obsCtx := lexarch.ObservationCTXCreate(
+    lexarch.RuneFormatterDefault(),
+    lexarch.LexarchRuneDomain(),
+    lexarch.RunesToBytesDefault(),
+)
 scratchAlloc := memarch.StackAllocatorCreate(1 * memcore.MegaByte)
 lexer := lexarch.LexerCreate(
     rulesets,
-    TokenError,
     TokenEOF,
     scratchAlloc.Allocate,
     10 * memcore.MegaByte,
+    obsCtx,
+    lexarch.Glushkov,
 )
 defer lexarch.LexerClose(lexer)
 ```
@@ -169,9 +182,9 @@ Releases all resources associated with the lexer. Must be called when done with 
 
 ### Session Management
 
-#### `LexerSessionCreate[TObservation, TState](initialState TState, input []TObservation, newlineDetector NewlineDetector[TObservation]) *LexerSession`
+#### `LexerSessionCreate[TObservation, TState, TToken](initialState TState, input []TObservation, newlineDetector NewlineDetector[TObservation], columnAdvanceFn ColumnAdvanceFn[TObservation]) *LexerSession`
 
-Creates a new lexing session with the specified initial state and input stream. The `newlineDetector` callback is used to identify newline characters for position tracking. Use `NewlineDetectorRune()` or `NewlineDetectorByte()` for common cases, or provide a custom detector for special newline conventions.
+Creates a new lexing session with the specified initial state and input stream. The `newlineDetector` callback is used to identify newline characters for position tracking. The `columnAdvanceFn` computes the next column from an observation and current column (e.g. `ColumnAdvanceRune(tabWidth)` for runes). Use `NewlineDetectorRune()` or `NewlineDetectorByte()` for common cases.
 
 #### `LexerSessionSetState[TObservation, TState](session *LexerSession, state TState)`
 
@@ -181,7 +194,12 @@ Changes the current lexer state, switching to a different ruleset for subsequent
 
 ```go
 input := []rune("if x else y")
-session := lexarch.LexerSessionCreate(StateNormal, input, lexarch.NewlineDetectorRune())
+session := lexarch.LexerSessionCreate(
+    StateNormal,
+    input,
+    lexarch.NewlineDetectorRune(),
+    lexarch.ColumnAdvanceRune(4),
+)
 
 // Switch to string state when entering string literal
 lexarch.LexerSessionSetState(session, StateString)
@@ -189,43 +207,41 @@ lexarch.LexerSessionSetState(session, StateString)
 
 ### Token Recognition
 
-#### `LexerConsume[TObservation, TState, TToken](lexer *Lexer, session *LexerSession) (Lexeme, error)`
+#### `LexerConsume[TObservation, TState, TToken, TTokenRole](lexer *Lexer, session *LexerSession) Lexeme`
 
-Recognizes and consumes the next token from the input stream at the current position. Advances the session position past the recognized token. Returns the EOF token when the end of input is reached.
+Recognizes and consumes the next token from the input stream at the current position. Advances the session position past the recognized token. Returns the EOF lexeme when the end of input is reached or when the session has a lexing error (check `session.GetLastError()`).
 
-#### `LexerPeek[TObservation, TState, TToken](lexer *Lexer, session *LexerSession) (Lexeme, error)`
+#### `LexerPeek[TObservation, TState, TToken, TTokenRole](lexer *Lexer, session *LexerSession, n int) Lexeme`
 
-Recognizes the next token without advancing the session position. Useful for lookahead. Returns the EOF token when the end of input is reached.
+Recognizes the n-th upcoming token without advancing the session position. Returns the EOF lexeme when past end of input or on error.
 
-#### `LexerAssertConsume[TObservation, TState, TToken](lexer *Lexer, session *LexerSession, expected TToken) (Lexeme, error)`
+#### `LexerAssertConsume[TObservation, TState, TToken, TTokenRole](lexer *Lexer, session *LexerSession, expected TToken) Lexeme`
 
-Consumes the next token and verifies it matches the expected token type. Returns error if mismatch.
+Consumes the next token and verifies it matches the expected token type. Sets `session.lastError` (via `GetLastError()`) if mismatch.
 
-#### `LexerAssertPeek[TObservation, TState, TToken](lexer *Lexer, session *LexerSession, expected TToken) (Lexeme, error)`
+#### `LexerAssertPeek[TObservation, TState, TToken, TTokenRole](lexer *Lexer, session *LexerSession, expected TToken, n int) Lexeme`
 
-Peeks at the next token and verifies it matches the expected token type without consuming it.
+Peeks at the n-th token and verifies it matches the expected token type without consuming it.
 
 **Example:**
 
 ```go
 for {
-    lexeme, err := lexarch.LexerConsume(lexer, session)
-    if err != nil {
-        fmt.Printf("Lexing error at position %d: %v\n", session.position, err)
+    lexeme := lexarch.LexerConsume(lexer, session)
+    if session.GetLastError() != nil {
+        fmt.Printf("Lexing error at position %d: %v\n", session.Position(), session.GetLastError())
         break
     }
-    
-    // Check for end of input
+
     if lexeme.Token == TokenEOF {
         fmt.Println("Reached end of input")
         break
     }
-    
-    fmt.Printf("Token: %v, Raw: %s, Position: %d-%d, Line: %d, Column: %d\n", 
+
+    fmt.Printf("Token: %v, Raw: %s, Position: %d-%d, Line: %d, Column: %d\n",
         lexeme.Token, string(lexeme.Raw), lexeme.Start, lexeme.End,
         lexeme.StartLine, lexeme.StartColumn)
-    
-    // State transitions based on token
+
     if lexeme.Token == TokenStringStart {
         lexarch.LexerSessionSetState(session, StateString)
     } else if lexeme.Token == TokenStringEnd {
@@ -236,45 +252,41 @@ for {
 
 ### Data Structures
 
-#### `Lexeme[TObservation, TToken]`
+#### `Lexeme[TObservation, TToken, TTokenRole]`
 
 Represents a recognized token containing:
 
 - `Raw []TObservation`: The raw observation sequence that matched
 - `Token TToken`: The token type
+- `Role TTokenRole`: The role assigned when the rule was added
 - `Start, End int`: Byte/observation position in the input stream
 - `StartLine, StartColumn int`: Line and column where token starts (1-indexed)
 - `EndLine, EndColumn int`: Line and column where token ends (1-indexed)
 - `TokenNumber int`: Sequence number of this token (1-indexed)
 
-#### `LexerSession[TObservation, TState]`
+#### `LexerSession[TObservation, TState, TToken]`
 
 Maintains lexing state:
 
-- `currentState TState`: Current lexer state
-- `input []TObservation`: Input stream
-- `position int`: Current position in input
+- `currentState TState`: Current lexer state (use `LexerSessionSetState` to change)
+- `input []TObservation`: Input stream (reference)
+- `position int`: Current position in input (use `Position()` method; see snapshot/restore for rollback)
 
 ### Streaming API
 
-The streaming API allows tokenization of input streams without requiring pre-allocated slices. It uses callback-based observation providers and internal buffering.
+The streaming API allows tokenization of input streams without requiring the full input in memory. It uses a callback **ObservationProducerFn** that writes observations into a buffer and reports EOF.
 
-#### `ObservationProvider[TObservation]`
-
-A callback function type that provides observations on-demand:
+#### `ObservationProducerFn[TObservation]`
 
 ```go
-type ObservationProvider[TObservation cmp.Ordered] func(count int) ([]TObservation, error)
+type ObservationProducerFn[TObservation cmp.Ordered] func(dst []TObservation) (n int, eof bool, err error)
 ```
 
-The provider:
-- Returns up to `count` observations (or fewer if EOF)
-- Returns empty slice (not error) when EOF is reached
-- Returns error only for actual read failures
+The producer writes up to `len(dst)` observations into `dst` and returns how many were written. If `eof` is true, no more data will follow. If `err` is non-nil, the lexing operation fails. Returning `(0, false, nil)` is allowed (no data yet; caller may retry).
 
-#### `LexerStreamingSessionCreate[TObservation, TState](initialState TState, provider ObservationProvider, bufferCapacity int, newlineDetector NewlineDetector[TObservation]) *LexerStreamingSession`
+#### `StreamingLexerSessionCreate[TObservation, TState, TToken](initialState TState, producer ObservationProducerFn[TObservation], newlineDetector NewlineDetector[TObservation], columnAdvanceFn ColumnAdvanceFn[TObservation], readChunkSize int, maxBufferedObservations int) *StreamingLexerSession`
 
-Creates a new streaming lexing session with the specified initial state and observation provider. The `newlineDetector` callback is used to identify newline characters for position tracking. Use `NewlineDetectorRune()` or `NewlineDetectorByte()` for common cases, or provide a custom detector for special newline conventions.
+Creates a new streaming lexing session. The producer is called to fill an internal buffer. `readChunkSize` is how many observations to request per producer call; `maxBufferedObservations` is the hard cap on buffer size (must be at least as large as the longest possible token).
 
 **Example:**
 
@@ -282,81 +294,76 @@ Creates a new streaming lexing session with the specified initial state and obse
 input := []rune("if x else y")
 position := 0
 
-provider := func(count int) ([]rune, error) {
+producer := func(dst []rune) (n int, eof bool, err error) {
     if position >= len(input) {
-        return nil, nil // EOF
+        return 0, true, nil
     }
-    end := position + count
+    end := position + len(dst)
     if end > len(input) {
         end = len(input)
     }
-    result := input[position:end]
-    position = end
-    return result, nil
+    n = copy(dst, input[position:end])
+    position += n
+    eof = position >= len(input)
+    return n, eof, nil
 }
 
-session := lexarch.LexerStreamingSessionCreate(StateNormal, provider, 1024, lexarch.NewlineDetectorRune())
+session := lexarch.StreamingLexerSessionCreate(
+    StateNormal,
+    producer,
+    lexarch.NewlineDetectorRune(),
+    lexarch.ColumnAdvanceRune(4),
+    256,
+    4096,
+)
 ```
 
-#### `LexerStreamingSessionSetState[TObservation, TState](session *LexerStreamingSession, state TState)`
+#### `StreamingLexerSessionSetState[TObservation, TState, TToken](session *StreamingLexerSession, state TState)`
 
 Changes the current lexer state for a streaming session.
 
-#### `LexerStreamingConsume[TObservation, TState, TToken](lexer *Lexer, session *LexerStreamingSession) (Lexeme, error)`
+#### `LexerConsumeStreaming`, `LexerPeekStreaming`, `LexerAssertConsumeStreaming`, `LexerAssertPeekStreaming`
 
-Consumes the next token from the streaming session. Advances position past the recognized token.
-
-#### `LexerStreamingPeek[TObservation, TState, TToken](lexer *Lexer, session *LexerStreamingSession) (Lexeme, error)`
-
-Peeks at the next token without consuming it.
-
-#### `LexerStreamingAssertConsume[TObservation, TState, TToken](lexer *Lexer, session *LexerStreamingSession, expected TToken) (Lexeme, error)`
-
-Consumes and verifies the token matches the expected type.
-
-#### `LexerStreamingAssertPeek[TObservation, TState, TToken](lexer *Lexer, session *LexerStreamingSession, expected TToken) (Lexeme, error)`
-
-Peeks and verifies the token matches the expected type.
+Same as the non-streaming Consume/Peek/Assert variants but take `*StreamingLexerSession`. Check `session.GetLastError()` for errors.
 
 **Example:**
 
 ```go
 for {
-    lexeme, err := lexarch.LexerStreamingConsume(lexer, session)
-    if err != nil {
-        fmt.Printf("Lexing error: %v\n", err)
+    lexeme := lexarch.LexerConsumeStreaming(lexer, session)
+    if session.GetLastError() != nil {
+        fmt.Printf("Lexing error: %v\n", session.GetLastError())
         break
     }
-    
+
     if lexeme.Token == TokenEOF {
         fmt.Println("Reached end of input")
         break
     }
-    
-    fmt.Printf("Token: %v, Raw: %s, Position: %d-%d, Line: %d, Column: %d\n", 
+
+    fmt.Printf("Token: %v, Raw: %s, Position: %d-%d, Line: %d, Column: %d\n",
         lexeme.Token, string(lexeme.Raw), lexeme.Start, lexeme.End,
         lexeme.StartLine, lexeme.StartColumn)
-    
-    // State transitions based on token
+
     if lexeme.Token == TokenStringStart {
-        lexarch.LexerStreamingSessionSetState(session, StateString)
+        lexarch.StreamingLexerSessionSetState(session, StateString)
     } else if lexeme.Token == TokenStringEnd {
-        lexarch.LexerStreamingSessionSetState(session, StateNormal)
+        lexarch.StreamingLexerSessionSetState(session, StateNormal)
     }
 }
 ```
 
-### Data Structures
+### Data Structures (streaming)
 
-#### `LexerStreamingSession[TObservation, TState]`
+#### `StreamingLexerSession[TObservation, TState, TToken]`
 
 Maintains streaming lexing state:
 
 - `currentState TState`: Current lexer state
-- `provider ObservationProvider[TObservation]`: Callback for observations
+- `producer ObservationProducerFn[TObservation]`: Callback for observations
 - `buffer []TObservation`: Internal buffer for lookahead
-- `absolutePosition int64`: Absolute position in stream
-- `eofReached bool`: Whether EOF has been reached
+- `absPos int`: Absolute position in stream (consumed observations)
+- `eof` / buffer length: Whether EOF reached and how much is buffered
 
 ### Position Tracking and Newline Detection
 
@@ -379,10 +386,11 @@ type NewlineDetector[TObservation cmp.Ordered] func(obs TObservation) bool
 
 ```go
 // For rune-based lexing
-session := lexarch.LexerSessionCreate(StateNormal, input, lexarch.NewlineDetectorRune())
+session := lexarch.LexerSessionCreate(StateNormal, input, lexarch.NewlineDetectorRune(), lexarch.ColumnAdvanceRune(4))
 
-// For byte-based lexing
-byteSession := lexarch.LexerSessionCreate(StateNormal, byteInput, lexarch.NewlineDetectorByte())
+// For byte-based lexing (column advance: one column per byte, or provide custom)
+byteAdvance := func(b byte, col int) int { return col + 1 }
+byteSession := lexarch.LexerSessionCreate(StateNormal, byteInput, lexarch.NewlineDetectorByte(), byteAdvance)
 
 // Custom newline detector (e.g., for Windows \r\n)
 customDetector := func(obs rune) bool {
@@ -432,25 +440,21 @@ fmt.Printf("Token %d at line %d, column %d-%d: %s\n",
 
 1. **Memory Lifetime**: Lexers hold references to allocated DFAs. Ensure allocators remain valid for the lexer's lifetime. Always call `LexerClose` when done.
 
-2. **Input Lifetime**: `Lexeme.Raw` is a slice into the original input. The input must remain valid for as long as lexemes are used.
+2. **Input Lifetime**: `Lexeme.Raw` is a slice into the original input for slice-based sessions. The input must remain valid for as long as lexemes are used. For streaming sessions, `Raw` is a copy.
 
 3. **State Validity**: The session's current state must have a corresponding ruleset in the lexer. Invalid states cause errors on token recognition.
 
 4. **Allocator Sizing**: Ensure `maxDFAAllocatorMemory` is sufficient for DFA storage. The lexer panics if exceeded during compilation.
 
-5. **Error Token**: The error token must be distinct from all valid token values. It is returned when no pattern matches.
+5. **Error handling**: When no pattern matches or on EOF, the lexer returns an EOF lexeme and may set `session.GetLastError()`. Check `GetLastError()` after Consume/Peek to detect lexing errors.
 
-6. **EOF Token**: The EOF token must be distinct from all valid token values and the error token. It is returned when the end of input is reached (position >= len(input)). The EOF lexeme has an empty Raw slice and Start/End both equal to len(input).
+6. **EOF Token**: The EOF token is returned when the end of input is reached (position >= len(input) for slice, or producer returned eof and buffer is empty for streaming). The EOF lexeme has `Raw == nil` and `Start == End`.
 
-7. **Position Bounds**: Session position must be within input bounds or at end. EOF is returned when position reaches end of input.
+7. **Concurrent Access**: Multiple sessions can use the same lexer concurrently, but each session should be used by a single goroutine.
 
-8. **Concurrent Access**: Multiple sessions can use the same lexer concurrently, but each session should be used by a single goroutine.
+8. **Streaming Buffer**: For streaming sessions, `maxBufferedObservations` must be >= longest possible token. Tokens exceeding the buffer will report a buffer limit error.
 
-9. **Streaming Buffer Capacity**: For streaming sessions, `bufferCapacity` must be >= longest possible token. Tokens exceeding capacity will return errors.
-
-10. **Streaming Raw Data**: For streaming sessions, `Lexeme.Raw` contains allocated copies (not slices into input). Caller is responsible for lifetime.
-
-11. **Provider Thread Safety**: Observation providers should be thread-safe if used concurrently with multiple sessions.
+9. **ObservationCTX**: Use `ObservationCTXCreate(formatter, observationDomain, toBytes)`. For runes: `LexarchRuneDomain()`, `RunesToBytesDefault()`, and `RuneFormatterDefault()` or `RuneFormatterCreate(cfg)`.
 
 ## Implementation Notes
 
