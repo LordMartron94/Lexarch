@@ -152,6 +152,17 @@ type lexingRule[TObservation cmp.Ordered, TToken, TTokenRole comparable] struct 
 }
 
 /*
+DelimitedRuleSpec holds open and close patterns for a token that represents a
+delimited region (e.g. block comment with open and close). Used by downstream
+consumers (e.g. editor IR) to generate push/body/pop state machines; lexer
+scanning is unchanged and still uses the token's main pattern.
+*/
+type DelimitedRuleSpec[TObservation cmp.Ordered] struct {
+	Open  pattern.RegulaAST[TObservation]
+	Close pattern.RegulaAST[TObservation]
+}
+
+/*
 TokenOutcome stores both the token type and its priority, used as the outcome type
 for DFAs to eliminate runtime priority lookups.
 
@@ -285,6 +296,7 @@ type LexingRuleset[TObservation cmp.Ordered, TToken, TTokenRole comparable] stru
 	tokenResolutionStep TokenResolutionStepFn[TToken]
 
 	tokenPatternMapping map[TToken]pattern.RegulaAST[TObservation]
+	delimitedRules      map[TToken]DelimitedRuleSpec[TObservation]
 }
 
 /*
@@ -357,6 +369,38 @@ func (l *LexingRuleset[TObservation, TToken, TTokenRole]) WithRulePriority(
 func (l *LexingRuleset[TObservation, TToken, TTokenRole]) GetPattern(token TToken) (pattern.RegulaAST[TObservation], bool) {
 	pattern, ok := l.tokenPatternMapping[token]
 	return pattern, ok
+}
+
+/*
+WithDelimitedRule annotates an existing token rule with open/close patterns for
+delimited regions. The token must already have a rule (via WithRule or
+WithRulePriority); this only stores metadata for consumers (e.g. editor IR).
+Lexer compilation and scanning are unchanged.
+*/
+func (l *LexingRuleset[TObservation, TToken, TTokenRole]) WithDelimitedRule(
+	open, close pattern.RegulaAST[TObservation],
+	token TToken,
+) {
+	if l.delimitedRules == nil {
+		l.delimitedRules = make(map[TToken]DelimitedRuleSpec[TObservation])
+	}
+	l.delimitedRules[token] = DelimitedRuleSpec[TObservation]{Open: open, Close: close}
+}
+
+/*
+GetDelimitedRule returns the open/close patterns for a token that has a
+delimited rule, if any. ok is false if the token was not registered with
+WithDelimitedRule.
+*/
+func (l *LexingRuleset[TObservation, TToken, TTokenRole]) GetDelimitedRule(token TToken) (open, close pattern.RegulaAST[TObservation], ok bool) {
+	if l.delimitedRules == nil {
+		return open, close, false
+	}
+	spec, ok := l.delimitedRules[token]
+	if !ok {
+		return open, close, false
+	}
+	return spec.Open, spec.Close, true
 }
 
 /*
