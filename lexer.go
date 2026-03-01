@@ -590,7 +590,7 @@ func (s *LexerSession[TObservation, TState, TToken]) end() {
 	s.inUse.Store(false)
 }
 
-func (s *LexerSession[TObservation, TState, TTOken]) Position() int {
+func (s *LexerSession[TObservation, TState, TToken]) Position() int {
 	return s.position
 }
 
@@ -1984,6 +1984,22 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 	compiler pattern.RegulaToNFACompiler[TObservation, TokenOutcome[TToken, TTokenRole]],
 	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
 ) *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]] {
+	obsEqual := func(a, b TObservation) bool {
+		return observationDomain.OrderingCmp(a, b) == 0
+	}
+	rules := ruleset.precompiledRules
+	for i := 0; i < len(rules); i++ {
+		for j := i + 1; j < len(rules); j++ {
+			if pattern.PatternEquivalent(&rules[i].pattern, &rules[j].pattern, obsEqual) {
+				panic(fmt.Sprintf(
+					"lexing ruleset: duplicate pattern: tokens %v and %v have equivalent patterns",
+					rules[i].token,
+					rules[j].token,
+				))
+			}
+		}
+	}
+
 	ctx := pattern.CreateSharedCompilationContext[TObservation, pattern.RegulaAST[TObservation]](
 		observationDomain,
 		pattern.ObservationFormatter[TObservation]{
