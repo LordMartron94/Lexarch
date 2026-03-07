@@ -106,10 +106,10 @@ rulesetPriority.WithRule(pattern.Class(pattern.Range('a', 'z')).Plus(), TokenIde
 
 ### Lexer Creation
 
-#### `LexerCreate[TObservation, TState, TToken, TTokenRole](inputRulesets map[TState]LexingRuleset, eofToken TToken, scratchAllocationFn AllocationFn, maxDFAAllocatorMemory MemoryUnitBytes, observationCtx ObservationCTX[TObservation], compilationMode CompilerMode) *Lexer`
+#### `LexerCreate[TObservation, TState, TToken, TTokenRole](inputRulesets map[TState]LexingRuleset, eofToken TToken, scratchAllocationFn AllocationFn, maxDFAAllocatorMemory MemoryUnitBytes, nfaToDFAPipelineMinTemp MemoryUnitBytes, nfaToDFAPipelineMaxTemp MemoryUnitBytes, observationCtx ObservationCTX[TObservation], compilationMode CompilerMode) *Lexer`
 
 Compiles a set of rulesets into a ready-to-use lexer. Each state's ruleset is compiled to a minimized DFA.
-The `eofToken` is returned when the end of input is reached. `observationCtx` provides observation formatting and domain/toBytes for compilation; use `ObservationCTXCreate(formatter, domain, toBytes)`. `compilationMode` is `lexarch.Thompson` or `lexarch.Glushkov` for NFA construction.
+The `eofToken` is returned when the end of input is reached. `observationCtx` provides observation formatting and domain/toBytes for compilation; use `ObservationCTXCreate(formatter, domain, toBytes)`. `compilationMode` is `lexarch.Thompson` or `lexarch.Glushkov` for NFA construction. `nfaToDFAPipelineMinTemp` and `nfaToDFAPipelineMaxTemp` configure the temporary allocator used during NFA-to-DFA conversion and DFA minimization (e.g. 1*KiloByte, 1*GigaByte).
 
 **Example:**
 
@@ -170,6 +170,8 @@ lexer := lexarch.LexerCreate(
     TokenEOF,
     scratchAlloc.Allocate,
     10 * memcore.MegaByte,
+    1 * memcore.KiloByte,
+    1 * memcore.GigaByte,
     obsCtx,
     lexarch.Glushkov,
 )

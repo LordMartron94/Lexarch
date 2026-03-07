@@ -1104,9 +1104,11 @@ Prerequisites:
 - eofToken must be distinct from all valid token values and errorToken
 - scratchAllocationFn must be a valid allocation function
 - maxDFAAllocatorMemory must be sufficient for DFA storage
+- nfaToDFAPipelineMinTemp and nfaToDFAPipelineMaxTemp define the temporary allocator bounds for NFA-to-DFA conversion and DFA minimization; max must be sufficient for the conversion working set
 
 Edge cases:
 - Panics if DFA allocator exceeds maxDFAAllocatorMemory
+- Panics if NFA-to-DFA or minimization temp allocator exceeds nfaToDFAPipelineMaxTemp
 - Empty rulesets create DFAs that never accept
 - Rules are evaluated with longest match priority
 - The lexer must be closed via LexerClose to free resources
@@ -1117,6 +1119,7 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 	eofToken TToken,
 	scratchAllocationFn memarch.AllocationFn,
 	maxDFAAllocatorMemory memcore.MemoryUnitBytes,
+	nfaToDFAPipelineMinTemp, nfaToDFAPipelineMaxTemp memcore.MemoryUnitBytes,
 	observationCtx ObservationCTX[TObservation],
 	compilationMode CompilerMode,
 ) *Lexer[TObservation, TState, TToken, TTokenRole] {
@@ -1148,7 +1151,7 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 
 		compiled := lexingRulesetCompile(ruleset, scratchAllocationFn, func(sizeBytes, alignment uint64) memcore.MarkRaw {
 			return memforge.DynamicLinearAllocatorMallocUnsafe(dfaAllocator, sizeBytes, alignment)
-		}, observationCtx.observationDomain, observationCtx.toBytes, compiler, nonTerminalOutcome)
+		}, nfaToDFAPipelineMinTemp, nfaToDFAPipelineMaxTemp, observationCtx.observationDomain, observationCtx.toBytes, compiler, nonTerminalOutcome)
 
 		lexerRulesets[state] = compiled
 
@@ -2023,6 +2026,7 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 	ruleset LexingRuleset[TObservation, TToken, TTokenRole],
 	scratchAllocFn memarch.AllocationFn,
 	dfaAllocFn memarch.AllocationFn,
+	nfaToDFAPipelineMinTemp, nfaToDFAPipelineMaxTemp memcore.MemoryUnitBytes,
 	observationDomain *domain.DiscreteDomain[TObservation],
 	toBytes func(observations []TObservation) []byte,
 	compiler pattern.RegulaToNFACompiler[TObservation, TokenOutcome[TToken, TTokenRole]],
@@ -2075,11 +2079,11 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 		outNFA = autarch.NFAMergeOr(outNFA, generatedNFA, scratchAllocFn)
 	}
 
-	dfa := autarch.NFAToDFA(outNFA, 1*memcore.KiloByte, 1*memcore.GigaByte, dfaAllocFn, nil)
+	dfa := autarch.NFAToDFA(outNFA, nfaToDFAPipelineMinTemp, nfaToDFAPipelineMaxTemp, dfaAllocFn, nil)
 	minimizedDFA := autarch.DFAMinimize(
 		dfa,
 		dfaAllocFn,
-		1*memcore.KiloByte, 1*memcore.GigaByte,
+		nfaToDFAPipelineMinTemp, nfaToDFAPipelineMaxTemp,
 		func(out pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]) pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]] {
 			return out
 		})

@@ -158,6 +158,8 @@ func buildTestLexer() (lexer *Lexer[rune, LexerState, TestToken, TokenRole], all
 			)
 		},
 		memcore.GigaByte,
+		memcore.KiloByte,
+		memcore.GigaByte,
 		ObservationCTX[rune]{
 			formatter:         RuneFormatterDefault(),
 			observationDomain: LexarchRuneDomain(),
