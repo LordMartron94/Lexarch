@@ -2079,7 +2079,36 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 		outNFA = autarch.NFAMergeOr(outNFA, generatedNFA, scratchAllocFn)
 	}
 
-	dfa := autarch.NFAToDFA(outNFA, nfaToDFAPipelineMinTemp, nfaToDFAPipelineMaxTemp, dfaAllocFn, nil)
+	// 1. Define the resolution strategy
+	resFn := func(states []uint64, outcomes []pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]) (pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]], bool) {
+		var best pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]
+		found := false
+
+		for _, out := range outcomes {
+			// Ignore the explicit non-terminal baseline
+			if out.Value == nonTerminalOutcome {
+				continue
+			}
+
+			// First valid outcome becomes the baseline
+			if !found {
+				best = out
+				found = true
+				continue
+			}
+
+			// If multiple patterns match, highest priority wins
+			// (e.g., TokKWTrue priority 2 beats TokIdentifier priority 1)
+			if out.Value.Priority > best.Value.Priority {
+				best = out
+			}
+		}
+
+		return best, found
+	}
+
+	// 2. Pass it to the subset constructor
+	dfa := autarch.NFAToDFA(outNFA, nfaToDFAPipelineMinTemp, nfaToDFAPipelineMaxTemp, dfaAllocFn, resFn)
 	minimizedDFA := autarch.DFAMinimize(
 		dfa,
 		dfaAllocFn,
