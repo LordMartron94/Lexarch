@@ -261,8 +261,7 @@ func ColumnAdvanceRune(tabWidth int) ColumnAdvanceFn[rune] {
 	return func(r rune, col int) int {
 		switch r {
 		case '\t':
-			offset := (col - 1) % tabWidth
-			return col + (tabWidth - offset)
+			return col + (tabWidth - ((col - 1) % tabWidth))
 		default:
 			return col + 1
 		}
