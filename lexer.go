@@ -809,6 +809,8 @@ type StreamingLexerSession[TObservation cmp.Ordered, TState, TToken comparable] 
 
 	// unread buffered observations starting at logical position 0
 	buffer []TObservation
+	// reusable temporary storage for producer reads
+	refillScratch []TObservation
 
 	// absolute position (count of consumed observations since start)
 	absPos int
@@ -932,6 +934,7 @@ func StreamingLexerSessionCreate[TObservation cmp.Ordered, TState, TToken compar
 		producer:                producer,
 		eof:                     false,
 		buffer:                  make([]TObservation, 0, min(readChunkSize, maxBufferedObservations)),
+		refillScratch:           make([]TObservation, 0, min(readChunkSize, maxBufferedObservations)),
 		absPos:                  0,
 		readChunkSize:           readChunkSize,
 		maxBufferedObservations: maxBufferedObservations,
@@ -961,6 +964,7 @@ func (s *StreamingLexerSession[TObservation, TState, TToken]) Reset(
 	s.tokenNumber = 1
 	s.eof = false
 	s.buffer = s.buffer[:0]
+	s.refillScratch = s.refillScratch[:0]
 	s.lastError = nil
 	lexerSessionScanCacheReset(&s.scanCache)
 }
@@ -1107,6 +1111,7 @@ const (
 type LexerScanConfig struct {
 	Mode               LexerScanMode
 	CircularBufferSize int
+	ForceRawCopy       bool
 }
 
 /* LexerScanConfigDefault returns the default scanner configuration. */
@@ -1114,6 +1119,7 @@ func LexerScanConfigDefault() LexerScanConfig {
 	return LexerScanConfig{
 		Mode:               ScanModeAsIs,
 		CircularBufferSize: 256,
+		ForceRawCopy:       false,
 	}
 }
 
@@ -1897,7 +1903,8 @@ func lexerCollectAllFromContext[TObservation cmp.Ordered, TState, TToken, TToken
 	columnAdvanceFn ColumnAdvanceFn[TObservation],
 	startLine, startCol, startToken int,
 ) ([]Lexeme[TObservation, TToken, TTokenRole], *LexingError[TObservation, TToken]) {
-	out := make([]Lexeme[TObservation, TToken, TTokenRole], 0, 256)
+	initialCap := lexerCollectAllInitialCapacity(ctx.remaining())
+	out := make([]Lexeme[TObservation, TToken, TTokenRole], 0, initialCap)
 	for {
 		chunk, err := lexerPeekRangeCore(
 			lexer,
@@ -1916,11 +1923,54 @@ func lexerCollectAllFromContext[TObservation cmp.Ordered, TState, TToken, TToken
 		if len(chunk) == 0 {
 			return out, nil
 		}
+		out = lexemeEnsureCapacity(out, len(chunk), ctx.remaining())
 		out = append(out, chunk...)
 		if chunk[len(chunk)-1].Token == lexer.eofToken {
 			return out, nil
 		}
 	}
+}
+
+func lexerCollectAllInitialCapacity(remainingObservations int) int {
+	if remainingObservations <= 0 {
+		return 256
+	}
+	estimated := remainingObservations / 3
+	if estimated < 256 {
+		return 256
+	}
+	if estimated > 16384 {
+		return 16384
+	}
+	return estimated
+}
+
+func lexemeEnsureCapacity[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+	items []Lexeme[TObservation, TToken, TTokenRole],
+	appendCount int,
+	remainingObservations int,
+) []Lexeme[TObservation, TToken, TTokenRole] {
+	if appendCount <= 0 {
+		return items
+	}
+	needed := len(items) + appendCount
+	if needed <= cap(items) {
+		return items
+	}
+	newCap := cap(items)
+	if newCap == 0 {
+		newCap = max(appendCount, 256)
+	}
+	for newCap < needed {
+		if remainingObservations >= 0 {
+			newCap *= 2
+		} else {
+			newCap += max(newCap/2, 256)
+		}
+	}
+	out := make([]Lexeme[TObservation, TToken, TTokenRole], len(items), newCap)
+	copy(out, items)
+	return out
 }
 
 func lexerPreTokensGet[TObservation cmp.Ordered, TToken, TTokenRole comparable](
@@ -2802,7 +2852,10 @@ func streamingEnsureAt[TObservation cmp.Ordered, TState, TToken comparable](
 			chunk = remaining
 		}
 
-		tmp := make([]TObservation, chunk)
+		if cap(session.refillScratch) < chunk {
+			session.refillScratch = make([]TObservation, 0, chunk)
+		}
+		tmp := session.refillScratch[:chunk]
 		n, eof, err := session.producer(tmp)
 		if err != nil {
 			return err
@@ -2812,6 +2865,7 @@ func streamingEnsureAt[TObservation cmp.Ordered, TState, TToken comparable](
 		}
 
 		if n > 0 {
+			streamingEnsureAppendCapacity(session, n)
 			session.buffer = append(session.buffer, tmp[:n]...)
 		}
 
@@ -2825,6 +2879,36 @@ func streamingEnsureAt[TObservation cmp.Ordered, TState, TToken comparable](
 	}
 
 	return nil
+}
+
+func streamingEnsureAppendCapacity[TObservation cmp.Ordered, TState, TToken comparable](
+	session *StreamingLexerSession[TObservation, TState, TToken],
+	appendCount int,
+) {
+	if appendCount <= 0 {
+		return
+	}
+	needed := len(session.buffer) + appendCount
+	if needed <= cap(session.buffer) {
+		return
+	}
+	newCap := cap(session.buffer)
+	if newCap == 0 {
+		newCap = min(max(appendCount, session.readChunkSize), session.maxBufferedObservations)
+	}
+	for newCap < needed {
+		grown := newCap * 2
+		if grown <= newCap {
+			grown = needed
+		}
+		if grown > session.maxBufferedObservations {
+			grown = session.maxBufferedObservations
+		}
+		newCap = grown
+	}
+	buf := make([]TObservation, len(session.buffer), newCap)
+	copy(buf, session.buffer)
+	session.buffer = buf
 }
 
 func streamingMaybeCompact[TObservation cmp.Ordered, TState, TToken comparable](session *StreamingLexerSession[TObservation, TState, TToken]) {
@@ -2883,7 +2967,7 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 			break
 		}
 
-		token, tokenRole, raw, found, currentDFAState, lexErr := scanOne(ctx, dfa, resolutionStep, lexer.nonTerminalOutcome)
+		token, tokenRole, raw, found, currentDFAState, lexErr := scanOne(ctx, dfa, resolutionStep, lexer.scanConfig.ForceRawCopy, lexer.nonTerminalOutcome)
 
 		// =====================================================
 		// scanOne produced structured error
@@ -2986,6 +3070,7 @@ func scanOne[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	ctx scannerContext[TObservation],
 	dfa *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]],
 	resolutionStep TokenResolutionStepFn[TToken],
+	forceRawCopy bool,
 	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
 ) (token TToken, tokenRole TTokenRole, raw []TObservation, found bool, state uint64, err *LexingError[TObservation, TToken]) {
 
@@ -2999,16 +3084,22 @@ func scanOne[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 		return token, role, nil, false, state, nil
 	}
 
-	raw = copyRaw(ctx.slice(0, endRel))
+	if forceRawCopy || ctx.rawRequiresCopy {
+		raw = copyRaw(ctx.slice(0, endRel))
+	} else {
+		raw = ctx.slice(0, endRel)
+	}
 	return token, role, raw, true, state, nil
 }
 
 type scannerContext[TObservation cmp.Ordered] struct {
-	next       func(int) (TObservation, bool, error)
-	slice      func(start, end int) []TObservation
-	atEOF      func() bool
-	position   func() int
-	advanceRaw func(raw []TObservation)
+	next            func(int) (TObservation, bool, error)
+	slice           func(start, end int) []TObservation
+	remaining       func() int
+	atEOF           func() bool
+	position        func() int
+	advanceRaw      func(raw []TObservation)
+	rawRequiresCopy bool
 }
 
 func scannerFromSlice[TObservation cmp.Ordered, TState, TToken comparable](
@@ -3026,7 +3117,11 @@ func scannerFromSlice[TObservation cmp.Ordered, TState, TToken comparable](
 		},
 
 		slice: func(start, end int) []TObservation {
-			return session.input[start:end]
+			base := session.position
+			return session.input[base+start : base+end]
+		},
+		remaining: func() int {
+			return len(session.input) - session.position
 		},
 
 		atEOF: func() bool {
@@ -3040,6 +3135,7 @@ func scannerFromSlice[TObservation cmp.Ordered, TState, TToken comparable](
 		advanceRaw: func(raw []TObservation) {
 			session.position += len(raw)
 		},
+		rawRequiresCopy: false,
 	}
 }
 
@@ -3054,6 +3150,9 @@ func scannerFromStreaming[TObservation cmp.Ordered, TState, TToken comparable](
 
 		slice: func(start, end int) []TObservation {
 			return session.buffer[start:end]
+		},
+		remaining: func() int {
+			return -1
 		},
 
 		atEOF: func() bool {
@@ -3070,6 +3169,7 @@ func scannerFromStreaming[TObservation cmp.Ordered, TState, TToken comparable](
 			session.buffer = session.buffer[n:]
 			streamingMaybeCompact(session)
 		},
+		rawRequiresCopy: true,
 	}
 }
 
@@ -3092,6 +3192,9 @@ func scannerFromSliceSimulated[TObservation cmp.Ordered, TState, TToken comparab
 		slice: func(start, end int) []TObservation {
 			return session.input[pos+start : pos+end]
 		},
+		remaining: func() int {
+			return len(session.input) - pos
+		},
 
 		atEOF: func() bool {
 			return pos >= len(session.input)
@@ -3104,6 +3207,7 @@ func scannerFromSliceSimulated[TObservation cmp.Ordered, TState, TToken comparab
 		advanceRaw: func(raw []TObservation) {
 			pos += len(raw)
 		},
+		rawRequiresCopy: false,
 	}
 }
 
@@ -3142,6 +3246,9 @@ func scannerFromStreamingSimulated[TObservation cmp.Ordered, TState, TToken comp
 		slice: func(start, end int) []TObservation {
 			return buffer[start:end]
 		},
+		remaining: func() int {
+			return -1
+		},
 
 		atEOF: func() bool {
 			return atEOF() && len(buffer) == 0
@@ -3156,6 +3263,7 @@ func scannerFromStreamingSimulated[TObservation cmp.Ordered, TState, TToken comp
 			absPos += n
 			buffer = buffer[n:]
 		},
+		rawRequiresCopy: true,
 	}
 }
 
