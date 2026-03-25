@@ -2107,7 +2107,14 @@ func lexingRulesetCompile[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 	}
 
 	// 2. Pass it to the subset constructor
-	dfa := autarch.NFAToDFA(outNFA, nfaToDFAPipelineMinTemp, nfaToDFAPipelineMaxTemp, dfaAllocFn, resFn)
+	dfa := autarch.NFAToDFA(
+		outNFA,
+		nfaToDFAPipelineMinTemp,
+		nfaToDFAPipelineMaxTemp,
+		dfaAllocFn,
+		pattern.SharedCompilationContextDeterministicResolverGet(ctx),
+		resFn,
+	)
 	minimizedDFA := autarch.DFAMinimize(
 		dfa,
 		dfaAllocFn,
