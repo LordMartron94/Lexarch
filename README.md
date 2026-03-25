@@ -174,6 +174,7 @@ lexer := lexarch.LexerCreate(
     1 * memcore.GigaByte,
     obsCtx,
     lexarch.Glushkov,
+    lexarch.LexerScanConfigDefault(),
 )
 defer lexarch.LexerClose(lexer)
 ```

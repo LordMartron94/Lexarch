@@ -621,6 +621,8 @@ type LexerSession[TObservation cmp.Ordered, TState, TToken comparable] struct {
 	inUse atomic.Bool
 
 	lastError *LexingError[TObservation, TToken]
+
+	scanCache lexerSessionScanCache
 }
 
 func (s *LexerSession[TObservation, TState, TToken]) begin() {
@@ -661,6 +663,7 @@ func (s *LexerSession[TObservation, TState, TToken]) RestoreSnapshot(ss LexerSes
 	s.currentLine = ss.Line
 	s.currentColumn = ss.Column
 	s.tokenNumber = ss.TokenNumber
+	lexerSessionScanCacheReset(&s.scanCache)
 }
 
 /*
@@ -686,6 +689,7 @@ Edge cases:
 */
 func LexerSessionSetState[TObservation cmp.Ordered, TState, TToken comparable](lexerSession *LexerSession[TObservation, TState, TToken], state TState) {
 	lexerSession.currentState = state
+	lexerSessionScanCacheReset(&lexerSession.scanCache)
 }
 
 /*
@@ -744,6 +748,7 @@ func (s *LexerSession[TObservation, TState, TToken]) Reset(
 	s.currentColumn = 1
 	s.tokenNumber = 1
 	s.lastError = nil
+	lexerSessionScanCacheReset(&s.scanCache)
 }
 
 func (s *LexerSession[TObservation, TState, TToken]) GetLastError() *LexingError[TObservation, TToken] {
@@ -823,6 +828,8 @@ type StreamingLexerSession[TObservation cmp.Ordered, TState, TToken comparable] 
 	inUse atomic.Bool
 
 	lastError *LexingError[TObservation, TToken]
+
+	scanCache lexerSessionScanCache
 }
 
 func (s *StreamingLexerSession[TObservation, TState, TToken]) begin() {
@@ -876,6 +883,7 @@ func (s *StreamingLexerSession[TObservation, TState, TToken]) RestoreSnapshot(
 
 	s.buffer = make([]TObservation, len(snap.Buffer))
 	copy(s.buffer, snap.Buffer)
+	lexerSessionScanCacheReset(&s.scanCache)
 }
 
 /*
@@ -954,6 +962,7 @@ func (s *StreamingLexerSession[TObservation, TState, TToken]) Reset(
 	s.eof = false
 	s.buffer = s.buffer[:0]
 	s.lastError = nil
+	lexerSessionScanCacheReset(&s.scanCache)
 }
 
 /*
@@ -971,6 +980,7 @@ func StreamingLexerSessionSetState[TObservation cmp.Ordered, TState, TToken comp
 	state TState,
 ) {
 	session.currentState = state
+	lexerSessionScanCacheReset(&session.scanCache)
 }
 
 func (s *StreamingLexerSession[TObservation, TState, TToken]) GetLastError() *LexingError[TObservation, TToken] {
@@ -1009,7 +1019,8 @@ type Lexer[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable] stru
 	dfaAllocator memcore.MarkRaw
 	eofToken     TToken
 
-	formatter ObservationFormatter[TObservation]
+	formatter  ObservationFormatter[TObservation]
+	scanConfig LexerScanConfig
 }
 
 /* ObservationCTX encapsulates the context for observation handling. */
@@ -1080,6 +1091,51 @@ const (
 	Glushkov
 )
 
+/* LexerScanMode controls how the lexer serves Peek/Consume operations. */
+type LexerScanMode int
+
+const (
+	/* ScanModeAsIs uses direct DFA scanning for each operation. */
+	ScanModeAsIs LexerScanMode = iota + 1
+	/* ScanModePreTokenizeAll tokenizes from current session cursor once and reuses tokens by index. */
+	ScanModePreTokenizeAll
+	/* ScanModeCircularTokenBuffer keeps a bounded upcoming token window near the current cursor. */
+	ScanModeCircularTokenBuffer
+)
+
+/* LexerScanConfig configures scanner behavior and mode-specific tuning values. */
+type LexerScanConfig struct {
+	Mode               LexerScanMode
+	CircularBufferSize int
+}
+
+/* LexerScanConfigDefault returns the default scanner configuration. */
+func LexerScanConfigDefault() LexerScanConfig {
+	return LexerScanConfig{
+		Mode:               ScanModeAsIs,
+		CircularBufferSize: 256,
+	}
+}
+
+type lexerSessionScanCache struct {
+	initialized bool
+	mode        LexerScanMode
+
+	baseTokenNumber int
+	preTokens       any
+
+	windowStartToken int
+	windowTokens     any
+}
+
+func lexerSessionScanCacheReset(cache *lexerSessionScanCache) {
+	cache.initialized = false
+	cache.baseTokenNumber = 0
+	cache.preTokens = nil
+	cache.windowStartToken = 0
+	cache.windowTokens = nil
+}
+
 /*
 LexerCreate compiles a set of rulesets into a ready-to-use lexer. Each state's ruleset is
 compiled to a minimized DFA for efficient token recognition. The compilation process:
@@ -1121,7 +1177,15 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 	nfaToDFAPipelineMinTemp, nfaToDFAPipelineMaxTemp memcore.MemoryUnitBytes,
 	observationCtx ObservationCTX[TObservation],
 	compilationMode CompilerMode,
+	scanConfig LexerScanConfig,
 ) *Lexer[TObservation, TState, TToken, TTokenRole] {
+	if scanConfig.Mode == 0 {
+		scanConfig = LexerScanConfigDefault()
+	}
+	if scanConfig.CircularBufferSize <= 0 {
+		scanConfig.CircularBufferSize = 1
+	}
+
 	dfaAllocator := memforge.DynamicLinearAllocatorCreateFunction(uint64(memcore.KiloByte), func(currentCap, neededCap uint64) uint64 {
 		newSize := max(currentCap*2, neededCap)
 
@@ -1169,6 +1233,7 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 		dfaAllocator:       dfaAllocator,
 		eofToken:           eofToken,
 		formatter:          observationCtx.formatter,
+		scanConfig:         scanConfig,
 	}
 }
 
@@ -1321,6 +1386,14 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *LexerSession[TObservation, TState, TToken],
 ) Lexeme[TObservation, TToken, TTokenRole] {
+	switch lexer.scanConfig.Mode {
+	case ScanModePreTokenizeAll:
+		return lexerConsumeFromPreTokenizedSession(lexer, session)
+	case ScanModeCircularTokenBuffer:
+		return lexerConsumeFromCircularWindowSession(lexer, session)
+	default:
+	}
+
 	session.begin()
 	defer session.end()
 
@@ -1423,6 +1496,14 @@ func LexerConsumeRange[TObservation cmp.Ordered, TState, TToken, TTokenRole comp
 	session *LexerSession[TObservation, TState, TToken],
 	count int,
 ) []Lexeme[TObservation, TToken, TTokenRole] {
+	switch lexer.scanConfig.Mode {
+	case ScanModePreTokenizeAll:
+		return lexerConsumeRangeFromPreTokenizedSession(lexer, session, count)
+	case ScanModeCircularTokenBuffer:
+		return lexerConsumeRangeFromCircularWindowSession(lexer, session, count)
+	default:
+	}
+
 	session.begin()
 	defer session.end()
 
@@ -1460,6 +1541,14 @@ func LexerPeek[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	session *LexerSession[TObservation, TState, TToken],
 	n int,
 ) Lexeme[TObservation, TToken, TTokenRole] {
+	switch lexer.scanConfig.Mode {
+	case ScanModePreTokenizeAll:
+		return lexerPeekFromPreTokenizedSession(lexer, session, n)
+	case ScanModeCircularTokenBuffer:
+		return lexerPeekFromCircularWindowSession(lexer, session, n)
+	default:
+	}
+
 	session.begin()
 	defer session.end()
 
@@ -1494,6 +1583,14 @@ func LexerPeekRange[TObservation cmp.Ordered, TState, TToken, TTokenRole compara
 	session *LexerSession[TObservation, TState, TToken],
 	count int,
 ) []Lexeme[TObservation, TToken, TTokenRole] {
+	switch lexer.scanConfig.Mode {
+	case ScanModePreTokenizeAll:
+		return lexerPeekRangeFromPreTokenizedSession(lexer, session, count)
+	case ScanModeCircularTokenBuffer:
+		return lexerPeekRangeFromCircularWindowSession(lexer, session, count)
+	default:
+	}
+
 	session.begin()
 	defer session.end()
 
@@ -1571,6 +1668,14 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *StreamingLexerSession[TObservation, TState, TToken],
 ) Lexeme[TObservation, TToken, TTokenRole] {
+	switch lexer.scanConfig.Mode {
+	case ScanModePreTokenizeAll:
+		return lexerConsumeFromPreTokenizedStreaming(lexer, session)
+	case ScanModeCircularTokenBuffer:
+		return lexerConsumeFromCircularWindowStreaming(lexer, session)
+	default:
+	}
+
 	session.begin()
 	defer session.end()
 
@@ -1634,6 +1739,14 @@ func LexerConsumeRangeStreaming[TObservation cmp.Ordered, TState, TToken, TToken
 	session *StreamingLexerSession[TObservation, TState, TToken],
 	count int,
 ) []Lexeme[TObservation, TToken, TTokenRole] {
+	switch lexer.scanConfig.Mode {
+	case ScanModePreTokenizeAll:
+		return lexerConsumeRangeFromPreTokenizedStreaming(lexer, session, count)
+	case ScanModeCircularTokenBuffer:
+		return lexerConsumeRangeFromCircularWindowStreaming(lexer, session, count)
+	default:
+	}
+
 	session.begin()
 	defer session.end()
 
@@ -1670,6 +1783,14 @@ func LexerPeekStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 	session *StreamingLexerSession[TObservation, TState, TToken],
 	n int,
 ) Lexeme[TObservation, TToken, TTokenRole] {
+	switch lexer.scanConfig.Mode {
+	case ScanModePreTokenizeAll:
+		return lexerPeekFromPreTokenizedStreaming(lexer, session, n)
+	case ScanModeCircularTokenBuffer:
+		return lexerPeekFromCircularWindowStreaming(lexer, session, n)
+	default:
+	}
+
 	if n < 0 || session.lastError != nil {
 		return lexerBuildEOFSessionStream(lexer, session)
 	}
@@ -1690,6 +1811,14 @@ func LexerPeekRangeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRol
 	session *StreamingLexerSession[TObservation, TState, TToken],
 	count int,
 ) []Lexeme[TObservation, TToken, TTokenRole] {
+	switch lexer.scanConfig.Mode {
+	case ScanModePreTokenizeAll:
+		return lexerPeekRangeFromPreTokenizedStreaming(lexer, session, count)
+	case ScanModeCircularTokenBuffer:
+		return lexerPeekRangeFromCircularWindowStreaming(lexer, session, count)
+	default:
+	}
+
 	session.begin()
 	defer session.end()
 
@@ -1758,6 +1887,514 @@ func LexerAssertPeekStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRo
 	}
 
 	return lex
+}
+
+func lexerCollectAllFromContext[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	ctx scannerContext[TObservation],
+	lexerState TState,
+	newlineDetector NewlineDetector[TObservation],
+	columnAdvanceFn ColumnAdvanceFn[TObservation],
+	startLine, startCol, startToken int,
+) ([]Lexeme[TObservation, TToken, TTokenRole], *LexingError[TObservation, TToken]) {
+	out := make([]Lexeme[TObservation, TToken, TTokenRole], 0, 256)
+	for {
+		chunk, err := lexerPeekRangeCore(
+			lexer,
+			ctx,
+			lexerState,
+			newlineDetector,
+			columnAdvanceFn,
+			startLine,
+			startCol,
+			startToken+len(out),
+			256,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if len(chunk) == 0 {
+			return out, nil
+		}
+		out = append(out, chunk...)
+		if chunk[len(chunk)-1].Token == lexer.eofToken {
+			return out, nil
+		}
+	}
+}
+
+func lexerPreTokensGet[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+	cache *lexerSessionScanCache,
+) ([]Lexeme[TObservation, TToken, TTokenRole], bool) {
+	if cache.preTokens == nil {
+		return nil, false
+	}
+	out, ok := cache.preTokens.([]Lexeme[TObservation, TToken, TTokenRole])
+	return out, ok
+}
+
+func lexerWindowTokensGet[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+	cache *lexerSessionScanCache,
+) ([]Lexeme[TObservation, TToken, TTokenRole], bool) {
+	if cache.windowTokens == nil {
+		return nil, false
+	}
+	out, ok := cache.windowTokens.([]Lexeme[TObservation, TToken, TTokenRole])
+	return out, ok
+}
+
+func lexerApplyConsumedLexemeToSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	session *LexerSession[TObservation, TState, TToken],
+	lex Lexeme[TObservation, TToken, TTokenRole],
+) {
+	if len(lex.Raw) == 0 {
+		return
+	}
+	session.position = lex.End
+	session.currentLine = lex.EndLine
+	session.currentColumn = lex.EndColumn
+	session.tokenNumber++
+}
+
+func lexerApplyConsumedLexemeToStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	session *StreamingLexerSession[TObservation, TState, TToken],
+	lex Lexeme[TObservation, TToken, TTokenRole],
+) {
+	if len(lex.Raw) == 0 {
+		return
+	}
+	session.absPos = lex.End
+	session.currentLine = lex.EndLine
+	session.currentColumn = lex.EndColumn
+	session.tokenNumber++
+	if len(lex.Raw) <= len(session.buffer) {
+		session.buffer = session.buffer[len(lex.Raw):]
+		streamingMaybeCompact(session)
+	}
+}
+
+func lexerPeekRangeFromPreTokenizedSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *LexerSession[TObservation, TState, TToken],
+	count int,
+) []Lexeme[TObservation, TToken, TTokenRole] {
+	session.begin()
+	defer session.end()
+	if count <= 0 || session.lastError != nil {
+		return nil
+	}
+	if !session.scanCache.initialized || session.scanCache.mode != ScanModePreTokenizeAll {
+		ctx := scannerFromSliceSimulated(session)
+		toks, err := lexerCollectAllFromContext(lexer, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn, session.currentLine, session.currentColumn, session.tokenNumber)
+		if err != nil {
+			err.Formatter = lexer.formatter
+			session.lastError = err
+			return nil
+		}
+		session.scanCache.initialized = true
+		session.scanCache.mode = ScanModePreTokenizeAll
+		session.scanCache.baseTokenNumber = session.tokenNumber
+		session.scanCache.preTokens = toks
+	}
+	toks, ok := lexerPreTokensGet[TObservation, TToken, TTokenRole](&session.scanCache)
+	if !ok {
+		lexerSessionScanCacheReset(&session.scanCache)
+		return nil
+	}
+	start := session.tokenNumber - session.scanCache.baseTokenNumber
+	if start < 0 || start >= len(toks) {
+		return []Lexeme[TObservation, TToken, TTokenRole]{lexerBuildEOFSession(lexer, session)}
+	}
+	end := start + count
+	if end > len(toks) {
+		end = len(toks)
+	}
+	out := make([]Lexeme[TObservation, TToken, TTokenRole], end-start)
+	copy(out, toks[start:end])
+	return out
+}
+
+func lexerPeekFromPreTokenizedSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *LexerSession[TObservation, TState, TToken],
+	n int,
+) Lexeme[TObservation, TToken, TTokenRole] {
+	if n < 0 || session.lastError != nil {
+		return lexerBuildEOFSession(lexer, session)
+	}
+	lexemes := lexerPeekRangeFromPreTokenizedSession(lexer, session, n+1)
+	if n >= len(lexemes) {
+		return lexerBuildEOFSession(lexer, session)
+	}
+	return lexemes[n]
+}
+
+func lexerConsumeFromPreTokenizedSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *LexerSession[TObservation, TState, TToken],
+) Lexeme[TObservation, TToken, TTokenRole] {
+	session.begin()
+	defer session.end()
+	if session.lastError != nil {
+		return lexerBuildEOFSession(lexer, session)
+	}
+	if !session.scanCache.initialized || session.scanCache.mode != ScanModePreTokenizeAll {
+		ctx := scannerFromSliceSimulated(session)
+		toks, err := lexerCollectAllFromContext(lexer, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn, session.currentLine, session.currentColumn, session.tokenNumber)
+		if err != nil {
+			err.Formatter = lexer.formatter
+			session.lastError = err
+			return lexerBuildEOFSession(lexer, session)
+		}
+		session.scanCache.initialized = true
+		session.scanCache.mode = ScanModePreTokenizeAll
+		session.scanCache.baseTokenNumber = session.tokenNumber
+		session.scanCache.preTokens = toks
+	}
+	toks, ok := lexerPreTokensGet[TObservation, TToken, TTokenRole](&session.scanCache)
+	if !ok {
+		lexerSessionScanCacheReset(&session.scanCache)
+		return lexerBuildEOFSession(lexer, session)
+	}
+	idx := session.tokenNumber - session.scanCache.baseTokenNumber
+	if idx < 0 || idx >= len(toks) {
+		return lexerBuildEOFSession(lexer, session)
+	}
+	lex := toks[idx]
+	lexerApplyConsumedLexemeToSession(session, lex)
+	return lex
+}
+
+func lexerConsumeRangeFromPreTokenizedSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *LexerSession[TObservation, TState, TToken],
+	count int,
+) []Lexeme[TObservation, TToken, TTokenRole] {
+	if count <= 0 {
+		return nil
+	}
+	out := make([]Lexeme[TObservation, TToken, TTokenRole], 0, count)
+	for i := 0; i < count; i++ {
+		lex := lexerConsumeFromPreTokenizedSession(lexer, session)
+		out = append(out, lex)
+		if lex.Token == lexer.eofToken {
+			break
+		}
+	}
+	return out
+}
+
+func lexerPeekRangeFromCircularWindowSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *LexerSession[TObservation, TState, TToken],
+	count int,
+) []Lexeme[TObservation, TToken, TTokenRole] {
+	session.begin()
+	defer session.end()
+	if count <= 0 || session.lastError != nil {
+		return nil
+	}
+	window, ok := lexerWindowTokensGet[TObservation, TToken, TTokenRole](&session.scanCache)
+	startMatches := session.scanCache.initialized && session.scanCache.mode == ScanModeCircularTokenBuffer && session.scanCache.windowStartToken == session.tokenNumber
+	if !ok || !startMatches || len(window) < count {
+		need := lexer.scanConfig.CircularBufferSize
+		if need < count {
+			need = count
+		}
+		ctx := scannerFromSliceSimulated(session)
+		lexemes, err := lexerPeekRangeCore(lexer, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn, session.currentLine, session.currentColumn, session.tokenNumber, need)
+		if err != nil {
+			err.Formatter = lexer.formatter
+			session.lastError = err
+			return nil
+		}
+		session.scanCache.initialized = true
+		session.scanCache.mode = ScanModeCircularTokenBuffer
+		session.scanCache.windowStartToken = session.tokenNumber
+		session.scanCache.windowTokens = lexemes
+		window = lexemes
+	}
+	if len(window) < count {
+		count = len(window)
+	}
+	out := make([]Lexeme[TObservation, TToken, TTokenRole], count)
+	copy(out, window[:count])
+	return out
+}
+
+func lexerPeekFromCircularWindowSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *LexerSession[TObservation, TState, TToken],
+	n int,
+) Lexeme[TObservation, TToken, TTokenRole] {
+	if n < 0 || session.lastError != nil {
+		return lexerBuildEOFSession(lexer, session)
+	}
+	lexemes := lexerPeekRangeFromCircularWindowSession(lexer, session, n+1)
+	if n >= len(lexemes) {
+		return lexerBuildEOFSession(lexer, session)
+	}
+	return lexemes[n]
+}
+
+func lexerConsumeFromCircularWindowSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *LexerSession[TObservation, TState, TToken],
+) Lexeme[TObservation, TToken, TTokenRole] {
+	session.begin()
+	defer session.end()
+	if session.lastError != nil {
+		return lexerBuildEOFSession(lexer, session)
+	}
+	need := max(1, lexer.scanConfig.CircularBufferSize)
+	ctx := scannerFromSliceSimulated(session)
+	lexemes, err := lexerPeekRangeCore(lexer, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn, session.currentLine, session.currentColumn, session.tokenNumber, need)
+	if err != nil {
+		err.Formatter = lexer.formatter
+		session.lastError = err
+		return lexerBuildEOFSession(lexer, session)
+	}
+	if len(lexemes) == 0 {
+		return lexerBuildEOFSession(lexer, session)
+	}
+	session.scanCache.initialized = true
+	session.scanCache.mode = ScanModeCircularTokenBuffer
+	session.scanCache.windowStartToken = session.tokenNumber
+	session.scanCache.windowTokens = lexemes
+	lex := lexemes[0]
+	lexerApplyConsumedLexemeToSession(session, lex)
+	return lex
+}
+
+func lexerConsumeRangeFromCircularWindowSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *LexerSession[TObservation, TState, TToken],
+	count int,
+) []Lexeme[TObservation, TToken, TTokenRole] {
+	if count <= 0 {
+		return nil
+	}
+	out := make([]Lexeme[TObservation, TToken, TTokenRole], 0, count)
+	for i := 0; i < count; i++ {
+		lex := lexerConsumeFromCircularWindowSession(lexer, session)
+		out = append(out, lex)
+		if lex.Token == lexer.eofToken {
+			break
+		}
+	}
+	return out
+}
+
+func lexerPeekRangeFromPreTokenizedStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *StreamingLexerSession[TObservation, TState, TToken],
+	count int,
+) []Lexeme[TObservation, TToken, TTokenRole] {
+	session.begin()
+	defer session.end()
+	if count <= 0 || session.lastError != nil {
+		return nil
+	}
+	if !session.scanCache.initialized || session.scanCache.mode != ScanModePreTokenizeAll {
+		ctx := scannerFromStreamingSimulated(session)
+		toks, err := lexerCollectAllFromContext(lexer, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn, session.currentLine, session.currentColumn, session.tokenNumber)
+		if err != nil {
+			err.Formatter = lexer.formatter
+			session.lastError = err
+			return nil
+		}
+		session.scanCache.initialized = true
+		session.scanCache.mode = ScanModePreTokenizeAll
+		session.scanCache.baseTokenNumber = session.tokenNumber
+		session.scanCache.preTokens = toks
+	}
+	toks, ok := lexerPreTokensGet[TObservation, TToken, TTokenRole](&session.scanCache)
+	if !ok {
+		lexerSessionScanCacheReset(&session.scanCache)
+		return nil
+	}
+	start := session.tokenNumber - session.scanCache.baseTokenNumber
+	if start < 0 || start >= len(toks) {
+		return []Lexeme[TObservation, TToken, TTokenRole]{lexerBuildEOFSessionStream(lexer, session)}
+	}
+	end := start + count
+	if end > len(toks) {
+		end = len(toks)
+	}
+	out := make([]Lexeme[TObservation, TToken, TTokenRole], end-start)
+	copy(out, toks[start:end])
+	return out
+}
+
+func lexerPeekFromPreTokenizedStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *StreamingLexerSession[TObservation, TState, TToken],
+	n int,
+) Lexeme[TObservation, TToken, TTokenRole] {
+	if n < 0 || session.lastError != nil {
+		return lexerBuildEOFSessionStream(lexer, session)
+	}
+	lexemes := lexerPeekRangeFromPreTokenizedStreaming(lexer, session, n+1)
+	if n >= len(lexemes) {
+		return lexerBuildEOFSessionStream(lexer, session)
+	}
+	return lexemes[n]
+}
+
+func lexerConsumeFromPreTokenizedStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *StreamingLexerSession[TObservation, TState, TToken],
+) Lexeme[TObservation, TToken, TTokenRole] {
+	session.begin()
+	defer session.end()
+	if session.lastError != nil {
+		return lexerBuildEOFSessionStream(lexer, session)
+	}
+	if !session.scanCache.initialized || session.scanCache.mode != ScanModePreTokenizeAll {
+		ctx := scannerFromStreamingSimulated(session)
+		toks, err := lexerCollectAllFromContext(lexer, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn, session.currentLine, session.currentColumn, session.tokenNumber)
+		if err != nil {
+			err.Formatter = lexer.formatter
+			session.lastError = err
+			return lexerBuildEOFSessionStream(lexer, session)
+		}
+		session.scanCache.initialized = true
+		session.scanCache.mode = ScanModePreTokenizeAll
+		session.scanCache.baseTokenNumber = session.tokenNumber
+		session.scanCache.preTokens = toks
+	}
+	toks, ok := lexerPreTokensGet[TObservation, TToken, TTokenRole](&session.scanCache)
+	if !ok {
+		lexerSessionScanCacheReset(&session.scanCache)
+		return lexerBuildEOFSessionStream(lexer, session)
+	}
+	idx := session.tokenNumber - session.scanCache.baseTokenNumber
+	if idx < 0 || idx >= len(toks) {
+		return lexerBuildEOFSessionStream(lexer, session)
+	}
+	lex := toks[idx]
+	lexerApplyConsumedLexemeToStreaming(session, lex)
+	return lex
+}
+
+func lexerConsumeRangeFromPreTokenizedStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *StreamingLexerSession[TObservation, TState, TToken],
+	count int,
+) []Lexeme[TObservation, TToken, TTokenRole] {
+	if count <= 0 {
+		return nil
+	}
+	out := make([]Lexeme[TObservation, TToken, TTokenRole], 0, count)
+	for i := 0; i < count; i++ {
+		lex := lexerConsumeFromPreTokenizedStreaming(lexer, session)
+		out = append(out, lex)
+		if lex.Token == lexer.eofToken {
+			break
+		}
+	}
+	return out
+}
+
+func lexerPeekRangeFromCircularWindowStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *StreamingLexerSession[TObservation, TState, TToken],
+	count int,
+) []Lexeme[TObservation, TToken, TTokenRole] {
+	session.begin()
+	defer session.end()
+	if count <= 0 || session.lastError != nil {
+		return nil
+	}
+	window, ok := lexerWindowTokensGet[TObservation, TToken, TTokenRole](&session.scanCache)
+	startMatches := session.scanCache.initialized && session.scanCache.mode == ScanModeCircularTokenBuffer && session.scanCache.windowStartToken == session.tokenNumber
+	if !ok || !startMatches || len(window) < count {
+		need := lexer.scanConfig.CircularBufferSize
+		if need < count {
+			need = count
+		}
+		ctx := scannerFromStreamingSimulated(session)
+		lexemes, err := lexerPeekRangeCore(lexer, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn, session.currentLine, session.currentColumn, session.tokenNumber, need)
+		if err != nil {
+			err.Formatter = lexer.formatter
+			session.lastError = err
+			return nil
+		}
+		session.scanCache.initialized = true
+		session.scanCache.mode = ScanModeCircularTokenBuffer
+		session.scanCache.windowStartToken = session.tokenNumber
+		session.scanCache.windowTokens = lexemes
+		window = lexemes
+	}
+	if len(window) < count {
+		count = len(window)
+	}
+	out := make([]Lexeme[TObservation, TToken, TTokenRole], count)
+	copy(out, window[:count])
+	return out
+}
+
+func lexerPeekFromCircularWindowStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *StreamingLexerSession[TObservation, TState, TToken],
+	n int,
+) Lexeme[TObservation, TToken, TTokenRole] {
+	if n < 0 || session.lastError != nil {
+		return lexerBuildEOFSessionStream(lexer, session)
+	}
+	lexemes := lexerPeekRangeFromCircularWindowStreaming(lexer, session, n+1)
+	if n >= len(lexemes) {
+		return lexerBuildEOFSessionStream(lexer, session)
+	}
+	return lexemes[n]
+}
+
+func lexerConsumeFromCircularWindowStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *StreamingLexerSession[TObservation, TState, TToken],
+) Lexeme[TObservation, TToken, TTokenRole] {
+	session.begin()
+	defer session.end()
+	if session.lastError != nil {
+		return lexerBuildEOFSessionStream(lexer, session)
+	}
+	need := max(1, lexer.scanConfig.CircularBufferSize)
+	ctx := scannerFromStreamingSimulated(session)
+	lexemes, err := lexerPeekRangeCore(lexer, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn, session.currentLine, session.currentColumn, session.tokenNumber, need)
+	if err != nil {
+		err.Formatter = lexer.formatter
+		session.lastError = err
+		return lexerBuildEOFSessionStream(lexer, session)
+	}
+	if len(lexemes) == 0 {
+		return lexerBuildEOFSessionStream(lexer, session)
+	}
+	session.scanCache.initialized = true
+	session.scanCache.mode = ScanModeCircularTokenBuffer
+	session.scanCache.windowStartToken = session.tokenNumber
+	session.scanCache.windowTokens = lexemes
+	lex := lexemes[0]
+	lexerApplyConsumedLexemeToStreaming(session, lex)
+	return lex
+}
+
+func lexerConsumeRangeFromCircularWindowStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *StreamingLexerSession[TObservation, TState, TToken],
+	count int,
+) []Lexeme[TObservation, TToken, TTokenRole] {
+	if count <= 0 {
+		return nil
+	}
+	out := make([]Lexeme[TObservation, TToken, TTokenRole], 0, count)
+	for i := 0; i < count; i++ {
+		lex := lexerConsumeFromCircularWindowStreaming(lexer, session)
+		out = append(out, lex)
+		if lex.Token == lexer.eofToken {
+			break
+		}
+	}
+	return out
 }
 
 // ------------------------------------------------------ PRIVATE HELPERS
