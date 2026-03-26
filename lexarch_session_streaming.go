@@ -51,7 +51,7 @@ Edge cases:
   - If maxBufferedObservations is too small for the longest token in the language,
     scanning can fail with an explicit buffer limit error.
 */
-type StreamingLexerSession[TObservation cmp.Ordered, TState, TToken comparable] struct {
+type StreamingLexerSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable] struct {
 	currentState TState
 
 	producer ObservationProducerFn[TObservation]
@@ -81,20 +81,20 @@ type StreamingLexerSession[TObservation cmp.Ordered, TState, TToken comparable] 
 
 	lastError *LexingError[TObservation, TToken]
 
-	scanCache lexerSessionScanCache
+	scanCache lexerSessionScanCache[TObservation, TToken, TTokenRole]
 }
 
-func (s *StreamingLexerSession[TObservation, TState, TToken]) begin() {
+func (s *StreamingLexerSession[TObservation, TState, TToken, TTokenRole]) begin() {
 	if !s.inUse.CompareAndSwap(false, true) {
 		panic("LexerSession is already in use (concurrent or re-entrant use detected)")
 	}
 }
 
-func (s *StreamingLexerSession[TObservation, TState, TToken]) end() {
+func (s *StreamingLexerSession[TObservation, TState, TToken, TTokenRole]) end() {
 	s.inUse.Store(false)
 }
 
-func (s *StreamingLexerSession[TObservation, TState, TToken]) AbsPosition() int {
+func (s *StreamingLexerSession[TObservation, TState, TToken, TTokenRole]) AbsPosition() int {
 	return s.absPos
 }
 
@@ -108,7 +108,7 @@ type StreamingLexerSessionSnapshot[TObservation cmp.Ordered, TState comparable] 
 	Buffer      []TObservation
 }
 
-func (s *StreamingLexerSession[TObservation, TState, TToken]) Snapshot() StreamingLexerSessionSnapshot[TObservation, TState] {
+func (s *StreamingLexerSession[TObservation, TState, TToken, TTokenRole]) Snapshot() StreamingLexerSessionSnapshot[TObservation, TState] {
 	bufCopy := make([]TObservation, len(s.buffer))
 	copy(bufCopy, s.buffer)
 
@@ -123,7 +123,7 @@ func (s *StreamingLexerSession[TObservation, TState, TToken]) Snapshot() Streami
 	}
 }
 
-func (s *StreamingLexerSession[TObservation, TState, TToken]) RestoreSnapshot(
+func (s *StreamingLexerSession[TObservation, TState, TToken, TTokenRole]) RestoreSnapshot(
 	snap StreamingLexerSessionSnapshot[TObservation, TState],
 ) {
 	s.currentState = snap.State
@@ -135,7 +135,7 @@ func (s *StreamingLexerSession[TObservation, TState, TToken]) RestoreSnapshot(
 
 	s.buffer = make([]TObservation, len(snap.Buffer))
 	copy(s.buffer, snap.Buffer)
-	lexerSessionScanCacheReset(&s.scanCache)
+	lexerSessionScanCacheResetSoft(&s.scanCache)
 }
 
 /*
@@ -161,14 +161,14 @@ Edge cases:
 - Panics if readChunkSize <= 0
 - Panics if maxBufferedObservations <= 0
 */
-func StreamingLexerSessionCreate[TObservation cmp.Ordered, TState, TToken comparable](
+func StreamingLexerSessionCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	initialState TState,
 	producer ObservationProducerFn[TObservation],
 	newlineDetector NewlineDetector[TObservation],
 	columnAdvanceFn ColumnAdvanceFn[TObservation],
 	readChunkSize int,
 	maxBufferedObservations int,
-) *StreamingLexerSession[TObservation, TState, TToken] {
+) *StreamingLexerSession[TObservation, TState, TToken, TTokenRole] {
 	if producer == nil {
 		panic("producer must not be nil")
 	}
@@ -179,7 +179,7 @@ func StreamingLexerSessionCreate[TObservation cmp.Ordered, TState, TToken compar
 		panic("maxBufferedObservations must be > 0")
 	}
 
-	return &StreamingLexerSession[TObservation, TState, TToken]{
+	return &StreamingLexerSession[TObservation, TState, TToken, TTokenRole]{
 		currentState:            initialState,
 		producer:                producer,
 		eof:                     false,
@@ -198,7 +198,7 @@ func StreamingLexerSessionCreate[TObservation cmp.Ordered, TState, TToken compar
 }
 
 /* Reset allows the same lexer streaming-session to be re-used again. */
-func (s *StreamingLexerSession[TObservation, TState, TToken]) Reset(
+func (s *StreamingLexerSession[TObservation, TState, TToken, TTokenRole]) Reset(
 	producer ObservationProducerFn[TObservation],
 	initialState TState,
 ) {
@@ -216,7 +216,7 @@ func (s *StreamingLexerSession[TObservation, TState, TToken]) Reset(
 	s.buffer = s.buffer[:0]
 	s.refillScratch = s.refillScratch[:0]
 	s.lastError = nil
-	lexerSessionScanCacheReset(&s.scanCache)
+	lexerSessionScanCacheResetSoft(&s.scanCache)
 }
 
 /*
@@ -229,14 +229,14 @@ Use cases:
 Time complexity: O(1)
 Space complexity: O(1)
 */
-func StreamingLexerSessionSetState[TObservation cmp.Ordered, TState, TToken comparable](
-	session *StreamingLexerSession[TObservation, TState, TToken],
+func StreamingLexerSessionSetState[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
 	state TState,
 ) {
 	session.currentState = state
-	lexerSessionScanCacheReset(&session.scanCache)
+	lexerSessionScanCacheResetSoft(&session.scanCache)
 }
 
-func (s *StreamingLexerSession[TObservation, TState, TToken]) GetLastError() *LexingError[TObservation, TToken] {
+func (s *StreamingLexerSession[TObservation, TState, TToken, TTokenRole]) GetLastError() *LexingError[TObservation, TToken] {
 	return s.lastError
 }

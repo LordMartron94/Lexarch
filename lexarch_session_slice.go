@@ -26,7 +26,7 @@ Edge cases:
 - State can be changed via LexerSessionSetState
 - Input is stored by reference, so modifications affect lexing
 */
-type LexerSession[TObservation cmp.Ordered, TState, TToken comparable] struct {
+type LexerSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable] struct {
 	currentState TState
 
 	input    []TObservation
@@ -44,20 +44,20 @@ type LexerSession[TObservation cmp.Ordered, TState, TToken comparable] struct {
 
 	lastError *LexingError[TObservation, TToken]
 
-	scanCache lexerSessionScanCache
+	scanCache lexerSessionScanCache[TObservation, TToken, TTokenRole]
 }
 
-func (s *LexerSession[TObservation, TState, TToken]) begin() {
+func (s *LexerSession[TObservation, TState, TToken, TTokenRole]) begin() {
 	if !s.inUse.CompareAndSwap(false, true) {
 		panic("LexerSession is already in use (concurrent or re-entrant use detected)")
 	}
 }
 
-func (s *LexerSession[TObservation, TState, TToken]) end() {
+func (s *LexerSession[TObservation, TState, TToken, TTokenRole]) end() {
 	s.inUse.Store(false)
 }
 
-func (s *LexerSession[TObservation, TState, TToken]) Position() int {
+func (s *LexerSession[TObservation, TState, TToken, TTokenRole]) Position() int {
 	return s.position
 }
 
@@ -69,7 +69,7 @@ type LexerSessionSnapshot[TState comparable] struct {
 	TokenNumber int
 }
 
-func (s *LexerSession[TObservation, TState, TToken]) Snapshot() LexerSessionSnapshot[TState] {
+func (s *LexerSession[TObservation, TState, TToken, TTokenRole]) Snapshot() LexerSessionSnapshot[TState] {
 	return LexerSessionSnapshot[TState]{
 		State:       s.currentState,
 		Position:    s.position,
@@ -79,13 +79,13 @@ func (s *LexerSession[TObservation, TState, TToken]) Snapshot() LexerSessionSnap
 	}
 }
 
-func (s *LexerSession[TObservation, TState, TToken]) RestoreSnapshot(ss LexerSessionSnapshot[TState]) {
+func (s *LexerSession[TObservation, TState, TToken, TTokenRole]) RestoreSnapshot(ss LexerSessionSnapshot[TState]) {
 	s.currentState = ss.State
 	s.position = ss.Position
 	s.currentLine = ss.Line
 	s.currentColumn = ss.Column
 	s.tokenNumber = ss.TokenNumber
-	lexerSessionScanCacheReset(&s.scanCache)
+	lexerSessionScanCacheResetSoft(&s.scanCache)
 }
 
 /*
@@ -109,9 +109,12 @@ Edge cases:
 - Invalid states will cause errors on next Consume/Peek operation
 - State changes take effect immediately for subsequent operations
 */
-func LexerSessionSetState[TObservation cmp.Ordered, TState, TToken comparable](lexerSession *LexerSession[TObservation, TState, TToken], state TState) {
+func LexerSessionSetState[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexerSession *LexerSession[TObservation, TState, TToken, TTokenRole],
+	state TState,
+) {
 	lexerSession.currentState = state
-	lexerSessionScanCacheReset(&lexerSession.scanCache)
+	lexerSessionScanCacheResetSoft(&lexerSession.scanCache)
 }
 
 /*
@@ -135,13 +138,13 @@ Edge cases:
 - Position starts at 0
 - Session can be reused by resetting position and state
 */
-func LexerSessionCreate[TObservation cmp.Ordered, TState, TToken comparable](
+func LexerSessionCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	initialState TState,
 	input []TObservation,
 	newlineDetector NewlineDetector[TObservation],
 	columnAdvanceFn ColumnAdvanceFn[TObservation],
-) *LexerSession[TObservation, TState, TToken] {
-	return &LexerSession[TObservation, TState, TToken]{
+) *LexerSession[TObservation, TState, TToken, TTokenRole] {
+	return &LexerSession[TObservation, TState, TToken, TTokenRole]{
 		currentState:    initialState,
 		input:           input,
 		position:        0,
@@ -155,7 +158,7 @@ func LexerSessionCreate[TObservation cmp.Ordered, TState, TToken comparable](
 }
 
 /* Reset allows the same lexer session to be re-used again. */
-func (s *LexerSession[TObservation, TState, TToken]) Reset(
+func (s *LexerSession[TObservation, TState, TToken, TTokenRole]) Reset(
 	input []TObservation,
 	initialState TState,
 ) {
@@ -170,9 +173,9 @@ func (s *LexerSession[TObservation, TState, TToken]) Reset(
 	s.currentColumn = 1
 	s.tokenNumber = 1
 	s.lastError = nil
-	lexerSessionScanCacheReset(&s.scanCache)
+	lexerSessionScanCacheResetSoft(&s.scanCache)
 }
 
-func (s *LexerSession[TObservation, TState, TToken]) GetLastError() *LexingError[TObservation, TToken] {
+func (s *LexerSession[TObservation, TState, TToken, TTokenRole]) GetLastError() *LexingError[TObservation, TToken] {
 	return s.lastError
 }

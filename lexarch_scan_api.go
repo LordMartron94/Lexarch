@@ -34,7 +34,7 @@ func lexerPeekRangeWithContext[TObservation cmp.Ordered, TState, TToken, TTokenR
 
 func lexerSetMismatchErrorAndEOFSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *LexerSession[TObservation, TState, TToken],
+	session *LexerSession[TObservation, TState, TToken, TTokenRole],
 	lex Lexeme[TObservation, TToken, TTokenRole],
 ) Lexeme[TObservation, TToken, TTokenRole] {
 	session.lastError = &LexingError[TObservation, TToken]{
@@ -49,7 +49,7 @@ func lexerSetMismatchErrorAndEOFSession[TObservation cmp.Ordered, TState, TToken
 
 func lexerSetMismatchErrorAndEOFStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *StreamingLexerSession[TObservation, TState, TToken],
+	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
 	lex Lexeme[TObservation, TToken, TTokenRole],
 ) Lexeme[TObservation, TToken, TTokenRole] {
 	session.lastError = &LexingError[TObservation, TToken]{
@@ -72,7 +72,7 @@ Time complexity: O(length of matched token)
 */
 func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *LexerSession[TObservation, TState, TToken],
+	session *LexerSession[TObservation, TState, TToken, TTokenRole],
 ) Lexeme[TObservation, TToken, TTokenRole] {
 	switch lexer.scanConfig.Mode {
 	case ScanModePreTokenizeAll:
@@ -181,7 +181,7 @@ The session state is updated to reflect the last successfully consumed token.
 */
 func LexerConsumeRange[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *LexerSession[TObservation, TState, TToken],
+	session *LexerSession[TObservation, TState, TToken, TTokenRole],
 	count int,
 ) []Lexeme[TObservation, TToken, TTokenRole] {
 	switch lexer.scanConfig.Mode {
@@ -222,7 +222,7 @@ LexerPeek returns the n-th token ahead without consuming input.
 */
 func LexerPeek[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *LexerSession[TObservation, TState, TToken],
+	session *LexerSession[TObservation, TState, TToken, TTokenRole],
 	n int,
 ) Lexeme[TObservation, TToken, TTokenRole] {
 	switch lexer.scanConfig.Mode {
@@ -262,7 +262,7 @@ LexerPeekRange returns up to `count` upcoming tokens without consuming input.
 */
 func LexerPeekRange[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *LexerSession[TObservation, TState, TToken],
+	session *LexerSession[TObservation, TState, TToken, TTokenRole],
 	count int,
 ) []Lexeme[TObservation, TToken, TTokenRole] {
 	switch lexer.scanConfig.Mode {
@@ -293,7 +293,7 @@ LexerAssertConsume consumes the next token and verifies it matches the expected 
 */
 func LexerAssertConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *LexerSession[TObservation, TState, TToken],
+	session *LexerSession[TObservation, TState, TToken, TTokenRole],
 	expected TToken,
 ) Lexeme[TObservation, TToken, TTokenRole] {
 	lex := LexerConsume(lexer, session)
@@ -310,7 +310,7 @@ LexerAssertPeek peeks at the n-th token and verifies it matches the expected typ
 */
 func LexerAssertPeek[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *LexerSession[TObservation, TState, TToken],
+	session *LexerSession[TObservation, TState, TToken, TTokenRole],
 	expected TToken,
 	n int,
 ) Lexeme[TObservation, TToken, TTokenRole] {
@@ -328,7 +328,7 @@ LexerConsumeStreaming consumes the next token from a streaming session.
 */
 func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *StreamingLexerSession[TObservation, TState, TToken],
+	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
 ) Lexeme[TObservation, TToken, TTokenRole] {
 	switch lexer.scanConfig.Mode {
 	case ScanModePreTokenizeAll:
@@ -398,7 +398,7 @@ LexerConsumeRangeStreaming consumes and returns up to `count` tokens from a stre
 */
 func LexerConsumeRangeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *StreamingLexerSession[TObservation, TState, TToken],
+	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
 	count int,
 ) []Lexeme[TObservation, TToken, TTokenRole] {
 	switch lexer.scanConfig.Mode {
@@ -438,7 +438,7 @@ LexerPeekStreaming performs lookahead on a streaming session.
 */
 func LexerPeekStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *StreamingLexerSession[TObservation, TState, TToken],
+	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
 	n int,
 ) Lexeme[TObservation, TToken, TTokenRole] {
 	switch lexer.scanConfig.Mode {
@@ -466,7 +466,7 @@ LexerPeekRangeStreaming returns up to `count` upcoming tokens without consuming 
 */
 func LexerPeekRangeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *StreamingLexerSession[TObservation, TState, TToken],
+	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
 	count int,
 ) []Lexeme[TObservation, TToken, TTokenRole] {
 	switch lexer.scanConfig.Mode {
@@ -497,7 +497,7 @@ LexerAssertConsumeStreaming consumes and verifies the next token from a streamin
 */
 func LexerAssertConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *StreamingLexerSession[TObservation, TState, TToken],
+	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
 	expected TToken,
 ) Lexeme[TObservation, TToken, TTokenRole] {
 	lex := LexerConsumeStreaming(lexer, session)
@@ -514,7 +514,7 @@ LexerAssertPeekStreaming peeks and verifies the next token from a streaming sess
 */
 func LexerAssertPeekStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *StreamingLexerSession[TObservation, TState, TToken],
+	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
 	expected TToken,
 	n int,
 ) Lexeme[TObservation, TToken, TTokenRole] {

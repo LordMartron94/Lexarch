@@ -71,8 +71,8 @@ func lexemeEOF[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	}
 }
 
-func streamingNextFn[TObservation cmp.Ordered, TState, TToken comparable](
-	session *StreamingLexerSession[TObservation, TState, TToken],
+func streamingNextFn[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
 ) func(int) (TObservation, bool, error) {
 
 	return func(i int) (TObservation, bool, error) {
@@ -112,7 +112,7 @@ func computePositionFromSlice[TObservation cmp.Ordered](
 
 func lexerCheckEOF[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *LexerSession[TObservation, TState, TToken],
+	session *LexerSession[TObservation, TState, TToken, TTokenRole],
 ) (Lexeme[TObservation, TToken, TTokenRole], bool) {
 	// fmt.Printf("Checking: pos=%05d, max=%05d; EOF? %v\n", session.position, len(session.input), session.position >= len(session.input))
 
@@ -131,14 +131,14 @@ func lexerCheckEOF[TObservation cmp.Ordered, TState, TToken, TTokenRole comparab
 
 func lexerBuildEOFSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *LexerSession[TObservation, TState, TToken],
+	session *LexerSession[TObservation, TState, TToken, TTokenRole],
 ) Lexeme[TObservation, TToken, TTokenRole] {
 	return lexerBuildEOF(lexer, session.position, session.currentLine, session.currentColumn, session.tokenNumber)
 }
 
 func lexerBuildEOFSessionStream[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *StreamingLexerSession[TObservation, TState, TToken],
+	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
 ) Lexeme[TObservation, TToken, TTokenRole] {
 	return lexerBuildEOF(lexer, session.absPos, session.currentLine, session.currentColumn, session.tokenNumber)
 }
@@ -268,7 +268,7 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 
 func lexerCheckEOFStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	session *StreamingLexerSession[TObservation, TState, TToken],
+	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
 ) (Lexeme[TObservation, TToken, TTokenRole], bool) {
 	if session.eof && len(session.buffer) == 0 {
 		return lexerBuildEOF(
@@ -283,8 +283,8 @@ func lexerCheckEOFStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole
 	return zero, false
 }
 
-func streamingEnsureAt[TObservation cmp.Ordered, TState, TToken comparable](
-	session *StreamingLexerSession[TObservation, TState, TToken],
+func streamingEnsureAt[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
 	i int,
 ) error {
 	if i < 0 {
@@ -335,8 +335,8 @@ func streamingEnsureAt[TObservation cmp.Ordered, TState, TToken comparable](
 	return nil
 }
 
-func streamingEnsureAppendCapacity[TObservation cmp.Ordered, TState, TToken comparable](
-	session *StreamingLexerSession[TObservation, TState, TToken],
+func streamingEnsureAppendCapacity[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
 	appendCount int,
 ) {
 	if appendCount <= 0 {
@@ -365,7 +365,7 @@ func streamingEnsureAppendCapacity[TObservation cmp.Ordered, TState, TToken comp
 	session.buffer = buf
 }
 
-func streamingMaybeCompact[TObservation cmp.Ordered, TState, TToken comparable](session *StreamingLexerSession[TObservation, TState, TToken]) {
+func streamingMaybeCompact[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole]) {
 	// If buffer is empty, drop backing array.
 	if len(session.buffer) == 0 {
 		session.buffer = session.buffer[:0:0]
@@ -390,7 +390,31 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 	startLine, startCol, startToken int,
 	count int,
 ) ([]Lexeme[TObservation, TToken, TTokenRole], *LexingError[TObservation, TToken]) {
+	out := make([]Lexeme[TObservation, TToken, TTokenRole], 0, count)
+	return lexerPeekRangeCoreInto(
+		lexer,
+		out,
+		ctx,
+		lexerState,
+		newlineDetector,
+		columnAdvanceFn,
+		startLine,
+		startCol,
+		startToken,
+		count,
+	)
+}
 
+func lexerPeekRangeCoreInto[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	out []Lexeme[TObservation, TToken, TTokenRole],
+	ctx scannerContext[TObservation],
+	lexerState TState,
+	newlineDetector NewlineDetector[TObservation],
+	columnAdvanceFn ColumnAdvanceFn[TObservation],
+	startLine, startCol, startToken int,
+	count int,
+) ([]Lexeme[TObservation, TToken, TTokenRole], *LexingError[TObservation, TToken]) {
 	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, lexerState)
 	if err != nil {
 		return nil, &LexingError[TObservation, TToken]{
@@ -406,7 +430,14 @@ func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 	col := startCol
 	tokenNum := startToken
 
-	out := make([]Lexeme[TObservation, TToken, TTokenRole], 0, count)
+	if count <= 0 {
+		return out[:0], nil
+	}
+	if cap(out) < count {
+		out = make([]Lexeme[TObservation, TToken, TTokenRole], 0, count)
+	} else {
+		out = out[:0]
+	}
 
 	for i := 0; i < count; i++ {
 		if ctx.atEOF() {
@@ -556,8 +587,8 @@ type scannerContext[TObservation cmp.Ordered] struct {
 	rawRequiresCopy bool
 }
 
-func scannerFromSlice[TObservation cmp.Ordered, TState, TToken comparable](
-	session *LexerSession[TObservation, TState, TToken],
+func scannerFromSlice[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	session *LexerSession[TObservation, TState, TToken, TTokenRole],
 ) scannerContext[TObservation] {
 
 	return scannerContext[TObservation]{
@@ -593,8 +624,8 @@ func scannerFromSlice[TObservation cmp.Ordered, TState, TToken comparable](
 	}
 }
 
-func scannerFromStreaming[TObservation cmp.Ordered, TState, TToken comparable](
-	session *StreamingLexerSession[TObservation, TState, TToken],
+func scannerFromStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
 ) scannerContext[TObservation] {
 
 	next := streamingNextFn(session)
@@ -627,8 +658,8 @@ func scannerFromStreaming[TObservation cmp.Ordered, TState, TToken comparable](
 	}
 }
 
-func scannerFromSliceSimulated[TObservation cmp.Ordered, TState, TToken comparable](
-	session *LexerSession[TObservation, TState, TToken],
+func scannerFromSliceSimulated[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	session *LexerSession[TObservation, TState, TToken, TTokenRole],
 ) scannerContext[TObservation] {
 
 	pos := session.position
@@ -665,8 +696,8 @@ func scannerFromSliceSimulated[TObservation cmp.Ordered, TState, TToken comparab
 	}
 }
 
-func scannerFromStreamingSimulated[TObservation cmp.Ordered, TState, TToken comparable](
-	session *StreamingLexerSession[TObservation, TState, TToken],
+func scannerFromStreamingSimulated[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
 ) scannerContext[TObservation] {
 
 	buffer := session.buffer

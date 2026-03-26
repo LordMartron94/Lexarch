@@ -201,7 +201,7 @@ func testQuotedStringClassic(t *testing.T, lexer *Lexer[rune, LexerState, TestTo
 
 	input := []rune(`"hello world"`)
 
-	session := LexerSessionCreate[rune, LexerState, TestToken](
+	session := LexerSessionCreate[rune, LexerState, TestToken, TokenRole](
 		NormalState,
 		input,
 		NewlineDetectorRune(),
@@ -260,7 +260,7 @@ func testQuotedStringStreaming(t *testing.T, lexer *Lexer[rune, LexerState, Test
 		return n, false, nil
 	}
 
-	session := StreamingLexerSessionCreate[rune, LexerState, TestToken](
+	session := StreamingLexerSessionCreate[rune, LexerState, TestToken, TokenRole](
 		NormalState,
 		producer,
 		NewlineDetectorRune(),

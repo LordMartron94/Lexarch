@@ -130,8 +130,6 @@ type LexerScanConfig struct {
 	Mode               LexerScanMode
 	CircularBufferSize int
 	ForceRawCopy       bool
-	UseSlicePool       bool
-	SlicePoolMinCap    int
 }
 
 /* LexerScanConfigDefault returns the default scanner configuration. */
@@ -140,30 +138,64 @@ func LexerScanConfigDefault() LexerScanConfig {
 		Mode:               ScanModeAsIs,
 		CircularBufferSize: 256,
 		ForceRawCopy:       false,
-		UseSlicePool:       false,
-		SlicePoolMinCap:    1024,
 	}
 }
 
-type lexerSessionScanCache struct {
+type lexerSessionScanCache[TObservation cmp.Ordered, TToken, TTokenRole comparable] struct {
 	initialized bool
 	mode        LexerScanMode
 
 	baseTokenNumber int
-	preTokens       any
+	preTokens       []Lexeme[TObservation, TToken, TTokenRole]
 
 	windowStartToken int
-	windowTokens     any
-	outScratch       any
-	collectScratch   any
+	windowTokens     []Lexeme[TObservation, TToken, TTokenRole]
+	outScratch       []Lexeme[TObservation, TToken, TTokenRole]
+	collectScratch   []Lexeme[TObservation, TToken, TTokenRole]
+	coreChunkScratch []Lexeme[TObservation, TToken, TTokenRole]
 }
 
-func lexerSessionScanCacheReset(cache *lexerSessionScanCache) {
+func lexerSessionScanCacheSliceResetRetain[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+	items []Lexeme[TObservation, TToken, TTokenRole],
+) []Lexeme[TObservation, TToken, TTokenRole] {
+	if items == nil {
+		return nil
+	}
+	return items[:0]
+}
+
+func lexerSessionScanCacheResetSoft[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+	cache *lexerSessionScanCache[TObservation, TToken, TTokenRole],
+) {
 	cache.initialized = false
+	cache.mode = 0
+	cache.baseTokenNumber = 0
+	cache.preTokens = lexerSessionScanCacheSliceResetRetain(cache.preTokens)
+	cache.windowStartToken = 0
+	cache.windowTokens = lexerSessionScanCacheSliceResetRetain(cache.windowTokens)
+	cache.outScratch = lexerSessionScanCacheSliceResetRetain(cache.outScratch)
+	cache.collectScratch = lexerSessionScanCacheSliceResetRetain(cache.collectScratch)
+	cache.coreChunkScratch = lexerSessionScanCacheSliceResetRetain(cache.coreChunkScratch)
+}
+
+func lexerSessionScanCacheResetHard[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+	cache *lexerSessionScanCache[TObservation, TToken, TTokenRole],
+) {
+	cache.initialized = false
+	cache.mode = 0
 	cache.baseTokenNumber = 0
 	cache.preTokens = nil
 	cache.windowStartToken = 0
 	cache.windowTokens = nil
+	cache.outScratch = nil
+	cache.collectScratch = nil
+	cache.coreChunkScratch = nil
+}
+
+func lexerSessionScanCacheReset[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+	cache *lexerSessionScanCache[TObservation, TToken, TTokenRole],
+) {
+	lexerSessionScanCacheResetSoft(cache)
 }
 
 /*
