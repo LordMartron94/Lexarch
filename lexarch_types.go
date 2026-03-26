@@ -130,6 +130,8 @@ type LexerScanConfig struct {
 	Mode               LexerScanMode
 	CircularBufferSize int
 	ForceRawCopy       bool
+	UseSlicePool       bool
+	SlicePoolMinCap    int
 }
 
 /* LexerScanConfigDefault returns the default scanner configuration. */
@@ -138,6 +140,8 @@ func LexerScanConfigDefault() LexerScanConfig {
 		Mode:               ScanModeAsIs,
 		CircularBufferSize: 256,
 		ForceRawCopy:       false,
+		UseSlicePool:       false,
+		SlicePoolMinCap:    1024,
 	}
 }
 
@@ -150,6 +154,8 @@ type lexerSessionScanCache struct {
 
 	windowStartToken int
 	windowTokens     any
+	outScratch       any
+	collectScratch   any
 }
 
 func lexerSessionScanCacheReset(cache *lexerSessionScanCache) {

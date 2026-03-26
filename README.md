@@ -445,19 +445,21 @@ fmt.Printf("Token %d at line %d, column %d-%d: %s\n",
 
 2. **Input Lifetime**: `Lexeme.Raw` is a slice into the original input for slice-based sessions. The input must remain valid for as long as lexemes are used. For streaming sessions, `Raw` is a copy.
 
-3. **State Validity**: The session's current state must have a corresponding ruleset in the lexer. Invalid states cause errors on token recognition.
+3. **Peek Slice Lifetime**: In cached scan modes (`ScanModePreTokenizeAll`, `ScanModeCircularTokenBuffer`), `LexerPeekRange*` results are returned from session-owned reusable scratch storage. Treat returned slices as ephemeral views valid only until the next lexer call on the same session.
 
-4. **Allocator Sizing**: Ensure `maxDFAAllocatorMemory` is sufficient for DFA storage. The lexer panics if exceeded during compilation.
+4. **State Validity**: The session's current state must have a corresponding ruleset in the lexer. Invalid states cause errors on token recognition.
 
-5. **Error handling**: When no pattern matches or on EOF, the lexer returns an EOF lexeme and may set `session.GetLastError()`. Check `GetLastError()` after Consume/Peek to detect lexing errors.
+5. **Allocator Sizing**: Ensure `maxDFAAllocatorMemory` is sufficient for DFA storage. The lexer panics if exceeded during compilation.
 
-6. **EOF Token**: The EOF token is returned when the end of input is reached (position >= len(input) for slice, or producer returned eof and buffer is empty for streaming). The EOF lexeme has `Raw == nil` and `Start == End`.
+6. **Error handling**: When no pattern matches or on EOF, the lexer returns an EOF lexeme and may set `session.GetLastError()`. Check `GetLastError()` after Consume/Peek to detect lexing errors.
 
-7. **Concurrent Access**: Multiple sessions can use the same lexer concurrently, but each session should be used by a single goroutine.
+7. **EOF Token**: The EOF token is returned when the end of input is reached (position >= len(input) for slice, or producer returned eof and buffer is empty for streaming). The EOF lexeme has `Raw == nil` and `Start == End`.
 
-8. **Streaming Buffer**: For streaming sessions, `maxBufferedObservations` must be >= longest possible token. Tokens exceeding the buffer will report a buffer limit error.
+8. **Concurrent Access**: Multiple sessions can use the same lexer concurrently, but each session should be used by a single goroutine.
 
-9. **ObservationCTX**: Use `ObservationCTXCreate(formatter, observationDomain, toBytes)`. For runes: `LexarchRuneDomain()`, `RunesToBytesDefault()`, and `RuneFormatterDefault()` or `RuneFormatterCreate(cfg)`.
+9. **Streaming Buffer**: For streaming sessions, `maxBufferedObservations` must be >= longest possible token. Tokens exceeding the buffer will report a buffer limit error.
+
+10. **ObservationCTX**: Use `ObservationCTXCreate(formatter, observationDomain, toBytes)`. For runes: `LexarchRuneDomain()`, `RunesToBytesDefault()`, and `RuneFormatterDefault()` or `RuneFormatterCreate(cfg)`.
 
 ## Implementation Notes
 

@@ -4,6 +4,7 @@ import "cmp"
 
 func lexerCollectAllFromContext[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	cache *lexerSessionScanCache,
 	ctx scannerContext[TObservation],
 	lexerState TState,
 	newlineDetector NewlineDetector[TObservation],
@@ -11,7 +12,7 @@ func lexerCollectAllFromContext[TObservation cmp.Ordered, TState, TToken, TToken
 	startLine, startCol, startToken int,
 ) ([]Lexeme[TObservation, TToken, TTokenRole], *LexingError[TObservation, TToken]) {
 	initialCap := lexerCollectAllInitialCapacity(ctx.remaining())
-	out := make([]Lexeme[TObservation, TToken, TTokenRole], 0, initialCap)
+	out := lexemeScratchCollectReset[TObservation, TState, TToken, TTokenRole](lexer, cache, initialCap)
 	for {
 		chunk, err := lexerPeekRangeCore(
 			lexer,
@@ -30,7 +31,7 @@ func lexerCollectAllFromContext[TObservation cmp.Ordered, TState, TToken, TToken
 		if len(chunk) == 0 {
 			return out, nil
 		}
-		out = lexemeEnsureCapacity(out, len(chunk), ctx.remaining())
+		out = lexemeCollectEnsureCapacity(lexer, cache, out, len(chunk), ctx.remaining())
 		out = append(out, chunk...)
 		if chunk[len(chunk)-1].Token == lexer.eofToken {
 			return out, nil
@@ -52,7 +53,9 @@ func lexerCollectAllInitialCapacity(remainingObservations int) int {
 	return estimated
 }
 
-func lexemeEnsureCapacity[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+func lexemeCollectEnsureCapacity[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	cache *lexerSessionScanCache,
 	items []Lexeme[TObservation, TToken, TTokenRole],
 	appendCount int,
 	remainingObservations int,
@@ -75,8 +78,11 @@ func lexemeEnsureCapacity[TObservation cmp.Ordered, TToken, TTokenRole comparabl
 			newCap += max(newCap/2, 256)
 		}
 	}
-	out := make([]Lexeme[TObservation, TToken, TTokenRole], len(items), newCap)
+	out := lexemeScratchAlloc[TObservation, TState, TToken, TTokenRole](lexer, newCap)
+	out = out[:len(items)]
 	copy(out, items)
+	cache.collectScratch = out[:0]
+	lexemeScratchRelease[TObservation, TState, TToken, TTokenRole](lexer, items)
 	return out
 }
 
@@ -88,6 +94,83 @@ func lexerPreTokensGet[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	}
 	out, ok := cache.preTokens.([]Lexeme[TObservation, TToken, TTokenRole])
 	return out, ok
+}
+
+func lexemeScratchOutGet[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+	cache *lexerSessionScanCache,
+) ([]Lexeme[TObservation, TToken, TTokenRole], bool) {
+	if cache.outScratch == nil {
+		return nil, false
+	}
+	out, ok := cache.outScratch.([]Lexeme[TObservation, TToken, TTokenRole])
+	return out, ok
+}
+
+func lexemeScratchCollectGet[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+	cache *lexerSessionScanCache,
+) ([]Lexeme[TObservation, TToken, TTokenRole], bool) {
+	if cache.collectScratch == nil {
+		return nil, false
+	}
+	out, ok := cache.collectScratch.([]Lexeme[TObservation, TToken, TTokenRole])
+	return out, ok
+}
+
+func lexemeScratchOutReset[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	cache *lexerSessionScanCache,
+	required int,
+) []Lexeme[TObservation, TToken, TTokenRole] {
+	out, ok := lexemeScratchOutGet[TObservation, TToken, TTokenRole](cache)
+	if !ok || cap(out) < required {
+		next := lexemeScratchAlloc[TObservation, TState, TToken, TTokenRole](lexer, required)
+		if ok {
+			lexemeScratchRelease[TObservation, TState, TToken, TTokenRole](lexer, out)
+		}
+		cache.outScratch = next
+		out = next
+	}
+	return out[:required]
+}
+
+func lexemeScratchCollectReset[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	cache *lexerSessionScanCache,
+	required int,
+) []Lexeme[TObservation, TToken, TTokenRole] {
+	out, ok := lexemeScratchCollectGet[TObservation, TToken, TTokenRole](cache)
+	if !ok || cap(out) < required {
+		next := lexemeScratchAlloc[TObservation, TState, TToken, TTokenRole](lexer, required)
+		if ok {
+			lexemeScratchRelease[TObservation, TState, TToken, TTokenRole](lexer, out)
+		}
+		cache.collectScratch = next
+		out = next
+	}
+	return out[:0]
+}
+
+func lexemeScratchAlloc[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	required int,
+) []Lexeme[TObservation, TToken, TTokenRole] {
+	if required <= 0 {
+		return nil
+	}
+	if lexer.scanConfig.UseSlicePool && required >= lexer.scanConfig.SlicePoolMinCap {
+		return lexemeSlicePoolAcquire[TObservation, TToken, TTokenRole](required)
+	}
+	return make([]Lexeme[TObservation, TToken, TTokenRole], 0, required)
+}
+
+func lexemeScratchRelease[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	buf []Lexeme[TObservation, TToken, TTokenRole],
+) {
+	if !lexer.scanConfig.UseSlicePool || len(buf) == 0 && cap(buf) == 0 {
+		return
+	}
+	lexemeSlicePoolRelease[TObservation, TToken, TTokenRole](buf, lexer.scanConfig.SlicePoolMinCap)
 }
 
 func lexerWindowTokensGet[TObservation cmp.Ordered, TToken, TTokenRole comparable](
@@ -138,6 +221,7 @@ func lexerEnsurePreTokenizedSessionCache[TObservation cmp.Ordered, TState, TToke
 		ctx := scannerFromSliceSimulated(session)
 		toks, err := lexerCollectAllFromContext(
 			lexer,
+			&session.scanCache,
 			ctx,
 			session.currentState,
 			session.newlineDetector,
@@ -172,6 +256,7 @@ func lexerEnsurePreTokenizedStreamingCache[TObservation cmp.Ordered, TState, TTo
 		ctx := scannerFromStreamingSimulated(session)
 		toks, err := lexerCollectAllFromContext(
 			lexer,
+			&session.scanCache,
 			ctx,
 			session.currentState,
 			session.newlineDetector,
@@ -304,7 +389,7 @@ func lexerPeekRangeFromPreTokenizedSession[TObservation cmp.Ordered, TState, TTo
 	if end > len(toks) {
 		end = len(toks)
 	}
-	out := make([]Lexeme[TObservation, TToken, TTokenRole], end-start)
+	out := lexemeScratchOutReset(lexer, &session.scanCache, end-start)
 	copy(out, toks[start:end])
 	return out
 }
@@ -382,7 +467,7 @@ func lexerPeekRangeFromCircularWindowSession[TObservation cmp.Ordered, TState, T
 	if len(window) < count {
 		count = len(window)
 	}
-	out := make([]Lexeme[TObservation, TToken, TTokenRole], count)
+	out := lexemeScratchOutReset(lexer, &session.scanCache, count)
 	copy(out, window[:count])
 	return out
 }
@@ -464,7 +549,7 @@ func lexerPeekRangeFromPreTokenizedStreaming[TObservation cmp.Ordered, TState, T
 	if end > len(toks) {
 		end = len(toks)
 	}
-	out := make([]Lexeme[TObservation, TToken, TTokenRole], end-start)
+	out := lexemeScratchOutReset(lexer, &session.scanCache, end-start)
 	copy(out, toks[start:end])
 	return out
 }
@@ -542,7 +627,7 @@ func lexerPeekRangeFromCircularWindowStreaming[TObservation cmp.Ordered, TState,
 	if len(window) < count {
 		count = len(window)
 	}
-	out := make([]Lexeme[TObservation, TToken, TTokenRole], count)
+	out := lexemeScratchOutReset(lexer, &session.scanCache, count)
 	copy(out, window[:count])
 	return out
 }
