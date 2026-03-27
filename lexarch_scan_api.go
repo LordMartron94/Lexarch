@@ -148,7 +148,7 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 
 	start := session.position
 	end := session.position + endRel
-	raw := copyRaw(session.input[start:end])
+	raw := session.input[start:end]
 
 	endLine, endCol := computePositionFromSlice(
 		raw,
