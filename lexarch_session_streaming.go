@@ -72,8 +72,9 @@ type StreamingLexerSession[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 	maxBufferedObservations int
 
 	// Position tracking state
-	newlineDetector NewlineDetector[TObservation]
-	columnAdvanceFn ColumnAdvanceFn[TObservation]
+	newlineDetector  NewlineDetector[TObservation]
+	columnAdvanceFn  ColumnAdvanceFn[TObservation]
+	positionTracking positionTrackingStrategy[TObservation]
 
 	currentLine   int // Current line number (1-indexed)
 	currentColumn int // Current column number (1-indexed)
@@ -186,11 +187,15 @@ func StreamingLexerSessionCreate[TObservation cmp.Ordered, TState, TToken, TToke
 		maxBufferedObservations: maxBufferedObservations,
 		newlineDetector:         newlineDetector,
 		columnAdvanceFn:         columnAdvanceFn,
-		currentLine:             1,
-		currentColumn:           1,
-		tokenNumber:             1,
-		lastError:               nil,
-		dfaCursors:              make(map[*autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]]]memstruct.ArrayCursor[uint64]),
+		positionTracking: positionTrackingStrategyGeneric(
+			newlineDetector,
+			columnAdvanceFn,
+		),
+		currentLine:   1,
+		currentColumn: 1,
+		tokenNumber:   1,
+		lastError:     nil,
+		dfaCursors:    make(map[*autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]]]memstruct.ArrayCursor[uint64]),
 	}
 	streamingLexerSessionScannerContextsInit(session)
 	return session

@@ -189,6 +189,14 @@ Releases all resources associated with the lexer. Must be called when done with 
 
 Creates a new lexing session with the specified initial state and input stream. The `newlineDetector` callback is used to identify newline characters for position tracking. The `columnAdvanceFn` computes the next column from an observation and current column (e.g. `ColumnAdvanceRune(tabWidth)` for runes). Use `NewlineDetectorRune()` or `NewlineDetectorByte()` for common cases.
 
+#### `LexerSessionCreateRuneFast[TState, TToken, TTokenRole](initialState TState, input []rune, tabWidth int) *LexerSession`
+
+Creates a rune session with explicit fast-path position tracking. This inlines newline and tab handling in the position loop and avoids per-character callback dispatch for line/column updates.
+
+#### `LexerSessionCreateByteFast[TState, TToken, TTokenRole](initialState TState, input []byte) *LexerSession`
+
+Creates a byte session with explicit fast-path position tracking. This inlines newline detection and default column advancement in the position loop.
+
 #### `LexerSessionSetState[TObservation, TState](session *LexerSession, state TState)`
 
 Changes the current lexer state, switching to a different ruleset for subsequent token recognition.
@@ -290,6 +298,14 @@ The producer writes up to `len(dst)` observations into `dst` and returns how man
 #### `StreamingLexerSessionCreate[TObservation, TState, TToken](initialState TState, producer ObservationProducerFn[TObservation], newlineDetector NewlineDetector[TObservation], columnAdvanceFn ColumnAdvanceFn[TObservation], readChunkSize int, maxBufferedObservations int) *StreamingLexerSession`
 
 Creates a new streaming lexing session. The producer is called to fill an internal buffer. `readChunkSize` is how many observations to request per producer call; `maxBufferedObservations` is the hard cap on buffer size (must be at least as large as the longest possible token).
+
+#### `StreamingLexerSessionCreateRuneFast[TState, TToken, TTokenRole](initialState TState, producer ObservationProducerFn[rune], readChunkSize int, maxBufferedObservations int, tabWidth int) *StreamingLexerSession`
+
+Creates a streaming rune session with explicit fast-path position tracking (inline newline/tab handling).
+
+#### `StreamingLexerSessionCreateByteFast[TState, TToken, TTokenRole](initialState TState, producer ObservationProducerFn[byte], readChunkSize int, maxBufferedObservations int) *StreamingLexerSession`
+
+Creates a streaming byte session with explicit fast-path position tracking (inline newline/default column handling).
 
 **Example:**
 
@@ -462,6 +478,8 @@ fmt.Printf("Token %d at line %d, column %d-%d: %s\n",
 10. **ObservationCTX**: Use `ObservationCTXCreate(formatter, observationDomain, toBytes)`. For runes: `LexarchRuneDomain()`, `RunesToBytesDefault()`, and `RuneFormatterDefault()` or `RuneFormatterCreate(cfg)`.
 
 11. **Debug Re-entrancy Guard**: Session misuse detection (`begin/end` re-entrancy checks) is enabled only in debug builds. Build with `-tags=debug` to enable guard panics; default builds remove this check for zero-overhead API entry paths.
+
+12. **Position Tracking Fast Path**: Fast position tracking is explicit and opt-in. Use `*CreateRuneFast` or `*CreateByteFast` constructors for inlined newline/column updates. Custom callback constructors preserve exact callback semantics through the generic path. The fast kernel rebinds observation slices as `[]rune` or `[]byte` via `unsafe` (no per-element type assertions); only use the rune fast path when `TObservation` is `rune`, and the byte fast path when it is `byte`.
 
 ## Implementation Notes
 

@@ -98,14 +98,27 @@ func lexemeEOF[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 
 func computePositionFromSlice[TObservation cmp.Ordered](
 	observations []TObservation,
+	tracking positionTrackingStrategy[TObservation],
+	startLine, startColumn int,
+) (endLine, endColumn int) {
+	switch tracking.mode {
+	case positionTrackingModeRuneFast:
+		return computePositionFromSliceRuneFast(observations, tracking.tabWidth, startLine, startColumn)
+	case positionTrackingModeByteFast:
+		return computePositionFromSliceByteFast(observations, startLine, startColumn)
+	default:
+		return computePositionFromSliceGeneric(observations, tracking.newlineDetector, tracking.columnAdvanceFn, startLine, startColumn)
+	}
+}
+
+func computePositionFromSliceGeneric[TObservation cmp.Ordered](
+	observations []TObservation,
 	newlineDetector NewlineDetector[TObservation],
 	advanceColumn ColumnAdvanceFn[TObservation],
 	startLine, startColumn int,
 ) (endLine, endColumn int) {
-
 	line := startLine
 	column := startColumn
-
 	for _, obs := range observations {
 		if newlineDetector(obs) {
 			line++
@@ -114,7 +127,60 @@ func computePositionFromSlice[TObservation cmp.Ordered](
 			column = advanceColumn(obs, column)
 		}
 	}
+	return line, column
+}
 
+func computePositionFromSliceRuneFast[TObservation cmp.Ordered](
+	observations []TObservation,
+	tabWidth int,
+	startLine, startColumn int,
+) (endLine, endColumn int) {
+	return computePositionFromSliceRuneFastRunes(unsafeSliceAsRune(observations), tabWidth, startLine, startColumn)
+}
+
+func computePositionFromSliceRuneFastRunes(
+	observations []rune,
+	tabWidth int,
+	startLine, startColumn int,
+) (endLine, endColumn int) {
+	line := startLine
+	column := startColumn
+	for _, r := range observations {
+		if r == '\n' {
+			line++
+			column = 1
+			continue
+		}
+		if r == '\t' {
+			column = column + (tabWidth - ((column - 1) % tabWidth))
+			continue
+		}
+		column++
+	}
+	return line, column
+}
+
+func computePositionFromSliceByteFast[TObservation cmp.Ordered](
+	observations []TObservation,
+	startLine, startColumn int,
+) (endLine, endColumn int) {
+	return computePositionFromSliceByteFastBytes(unsafeSliceAsByte(observations), startLine, startColumn)
+}
+
+func computePositionFromSliceByteFastBytes(
+	observations []byte,
+	startLine, startColumn int,
+) (endLine, endColumn int) {
+	line := startLine
+	column := startColumn
+	for _, b := range observations {
+		if b == '\n' {
+			line++
+			column = 1
+			continue
+		}
+		column++
+	}
 	return line, column
 }
 
@@ -475,8 +541,7 @@ func lexerPeekRangeCoreInto[TObservation cmp.Ordered, TState, TToken, TTokenRole
 	cursor memstruct.ArrayCursor[uint64],
 	out []Lexeme[TObservation, TToken, TTokenRole],
 	ctx scannerContext[TObservation],
-	newlineDetector NewlineDetector[TObservation],
-	columnAdvanceFn ColumnAdvanceFn[TObservation],
+	positionTracking positionTrackingStrategy[TObservation],
 	startLine, startCol, startToken int,
 	count int,
 ) ([]Lexeme[TObservation, TToken, TTokenRole], *LexingError[TObservation, TToken]) {
@@ -521,8 +586,7 @@ func lexerPeekRangeCoreInto[TObservation cmp.Ordered, TState, TToken, TTokenRole
 
 			errLine, errCol := computePositionFromSlice(
 				ctx.slice(0, lexErr.Position-base),
-				newlineDetector,
-				columnAdvanceFn,
+				positionTracking,
 				line,
 				col,
 			)
@@ -573,8 +637,7 @@ func lexerPeekRangeCoreInto[TObservation cmp.Ordered, TState, TToken, TTokenRole
 
 		endLine, endCol := computePositionFromSlice(
 			raw,
-			newlineDetector,
-			columnAdvanceFn,
+			positionTracking,
 			line,
 			col,
 		)
