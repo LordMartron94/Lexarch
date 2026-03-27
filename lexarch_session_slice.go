@@ -45,6 +45,9 @@ type LexerSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 	lastError *LexingError[TObservation, TToken]
 
 	scanCache lexerSessionScanCache[TObservation, TToken, TTokenRole]
+
+	liveScanner      sliceScannerLiveContext[TObservation, TState, TToken, TTokenRole]
+	simulatedScanner sliceScannerSimulatedContext[TObservation, TState, TToken, TTokenRole]
 }
 
 func (s *LexerSession[TObservation, TState, TToken, TTokenRole]) begin() {
@@ -144,7 +147,7 @@ func LexerSessionCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 	newlineDetector NewlineDetector[TObservation],
 	columnAdvanceFn ColumnAdvanceFn[TObservation],
 ) *LexerSession[TObservation, TState, TToken, TTokenRole] {
-	return &LexerSession[TObservation, TState, TToken, TTokenRole]{
+	session := &LexerSession[TObservation, TState, TToken, TTokenRole]{
 		currentState:    initialState,
 		input:           input,
 		position:        0,
@@ -155,6 +158,8 @@ func LexerSessionCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 		tokenNumber:     1,
 		lastError:       nil,
 	}
+	lexerSessionScannerContextsInit(session)
+	return session
 }
 
 /* Reset allows the same lexer session to be re-used again. */
@@ -174,6 +179,7 @@ func (s *LexerSession[TObservation, TState, TToken, TTokenRole]) Reset(
 	s.tokenNumber = 1
 	s.lastError = nil
 	lexerSessionScanCacheResetSoft(&s.scanCache)
+	lexerSessionScannerContextsInit(s)
 }
 
 func (s *LexerSession[TObservation, TState, TToken, TTokenRole]) GetLastError() *LexingError[TObservation, TToken] {

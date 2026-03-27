@@ -82,6 +82,9 @@ type StreamingLexerSession[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 	lastError *LexingError[TObservation, TToken]
 
 	scanCache lexerSessionScanCache[TObservation, TToken, TTokenRole]
+
+	liveScanner      streamingScannerLiveContext[TObservation, TState, TToken, TTokenRole]
+	simulatedScanner streamingScannerSimulatedContext[TObservation, TState, TToken, TTokenRole]
 }
 
 func (s *StreamingLexerSession[TObservation, TState, TToken, TTokenRole]) begin() {
@@ -179,7 +182,7 @@ func StreamingLexerSessionCreate[TObservation cmp.Ordered, TState, TToken, TToke
 		panic("maxBufferedObservations must be > 0")
 	}
 
-	return &StreamingLexerSession[TObservation, TState, TToken, TTokenRole]{
+	session := &StreamingLexerSession[TObservation, TState, TToken, TTokenRole]{
 		currentState:            initialState,
 		producer:                producer,
 		eof:                     false,
@@ -195,6 +198,8 @@ func StreamingLexerSessionCreate[TObservation cmp.Ordered, TState, TToken, TToke
 		tokenNumber:             1,
 		lastError:               nil,
 	}
+	streamingLexerSessionScannerContextsInit(session)
+	return session
 }
 
 /* Reset allows the same lexer streaming-session to be re-used again. */
@@ -217,6 +222,7 @@ func (s *StreamingLexerSession[TObservation, TState, TToken, TTokenRole]) Reset(
 	s.refillScratch = s.refillScratch[:0]
 	s.lastError = nil
 	lexerSessionScanCacheResetSoft(&s.scanCache)
+	streamingLexerSessionScannerContextsInit(s)
 }
 
 /*
