@@ -13,7 +13,7 @@ func lexerPeekRangeWithContext[TObservation cmp.Ordered, TState, TToken, TTokenR
 	resolutionStep TokenResolutionStepFn[TToken],
 	cursor memstruct.ArrayCursor[uint64],
 	out []Lexeme[TObservation, TToken, TTokenRole],
-	ctx scannerContext[TObservation],
+	ctx *scannerContext[TObservation],
 	positionTracking positionTrackingStrategy[TObservation],
 	startLine int,
 	startColumn int,

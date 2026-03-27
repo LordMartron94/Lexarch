@@ -540,7 +540,7 @@ func lexerPeekRangeCoreInto[TObservation cmp.Ordered, TState, TToken, TTokenRole
 	resolutionStep TokenResolutionStepFn[TToken],
 	cursor memstruct.ArrayCursor[uint64],
 	out []Lexeme[TObservation, TToken, TTokenRole],
-	ctx scannerContext[TObservation],
+	ctx *scannerContext[TObservation],
 	positionTracking positionTrackingStrategy[TObservation],
 	startLine, startCol, startToken int,
 	count int,
@@ -669,7 +669,7 @@ func lexerPeekRangeCoreInto[TObservation cmp.Ordered, TState, TToken, TTokenRole
 }
 
 func scanOne[TObservation cmp.Ordered, TToken, TTokenRole comparable](
-	ctx scannerContext[TObservation],
+	ctx *scannerContext[TObservation],
 	dfa *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]],
 	cursor memstruct.ArrayCursor[uint64],
 	resolutionStep TokenResolutionStepFn[TToken],
@@ -924,40 +924,40 @@ func streamingLexerSessionScannerContextsInit[TObservation cmp.Ordered, TState, 
 
 func scannerFromSlice[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	session *LexerSession[TObservation, TState, TToken, TTokenRole],
-) scannerContext[TObservation] {
+) *scannerContext[TObservation] {
 	if session.liveScanner.ctx.next == nil {
 		lexerSessionScannerContextsInit(session)
 	}
-	return session.liveScanner.ctx
+	return &session.liveScanner.ctx
 }
 
 func scannerFromStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
-) scannerContext[TObservation] {
+) *scannerContext[TObservation] {
 	if session.liveScanner.ctx.next == nil {
 		streamingLexerSessionScannerContextsInit(session)
 	}
-	return session.liveScanner.ctx
+	return &session.liveScanner.ctx
 }
 
 func scannerFromSliceSimulated[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	session *LexerSession[TObservation, TState, TToken, TTokenRole],
-) scannerContext[TObservation] {
+) *scannerContext[TObservation] {
 	if session.simulatedScanner.ctx.next == nil {
 		lexerSessionScannerContextsInit(session)
 	}
 	sliceScannerSimulatedContextReset(&session.simulatedScanner)
-	return session.simulatedScanner.ctx
+	return &session.simulatedScanner.ctx
 }
 
 func scannerFromStreamingSimulated[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
-) scannerContext[TObservation] {
+) *scannerContext[TObservation] {
 	if session.simulatedScanner.ctx.next == nil {
 		streamingLexerSessionScannerContextsInit(session)
 	}
 	streamingScannerSimulatedContextReset(&session.simulatedScanner)
-	return session.simulatedScanner.ctx
+	return &session.simulatedScanner.ctx
 }
 
 func copyRaw[T any](src []T) []T {

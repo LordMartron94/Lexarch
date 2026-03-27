@@ -13,7 +13,7 @@ func lexerCollectAllFromContext[TObservation cmp.Ordered, TState, TToken, TToken
 	resolutionStep TokenResolutionStepFn[TToken],
 	cursor memstruct.ArrayCursor[uint64],
 	cache *lexerSessionScanCache[TObservation, TToken, TTokenRole],
-	ctx scannerContext[TObservation],
+	ctx *scannerContext[TObservation],
 	positionTracking positionTrackingStrategy[TObservation],
 	startLine, startCol, startToken int,
 ) ([]Lexeme[TObservation, TToken, TTokenRole], *LexingError[TObservation, TToken]) {
@@ -472,14 +472,36 @@ func lexerConsumeRangeFromPreTokenizedSession[TObservation cmp.Ordered, TState, 
 	if count <= 0 {
 		return nil
 	}
-	out := lexemeScratchOutReset(&session.scanCache, count)
-	out = out[:0]
-	for i := 0; i < count; i++ {
-		lex := lexerConsumeFromPreTokenizedSession(lexer, session)
-		out = append(out, lex)
+	session.begin()
+	defer session.end()
+	if session.lastError != nil {
+		return nil
+	}
+	toks, ok := lexerEnsurePreTokenizedSessionCache(lexer, session)
+	if !ok {
+		return []Lexeme[TObservation, TToken, TTokenRole]{lexerBuildEOFSession(lexer, session)}
+	}
+	start := session.tokenNumber - session.scanCache.baseTokenNumber
+	if start < 0 || start >= len(toks) {
+		return []Lexeme[TObservation, TToken, TTokenRole]{lexerBuildEOFSession(lexer, session)}
+	}
+	end := start + count
+	if end > len(toks) {
+		end = len(toks)
+	}
+	segment := toks[start:end]
+	n := len(segment)
+	for i, lex := range segment {
 		if lex.Token == lexer.eofToken {
+			n = i + 1
 			break
 		}
+	}
+	segment = segment[:n]
+	out := lexemeScratchOutReset(&session.scanCache, len(segment))
+	copy(out, segment)
+	for _, lex := range out {
+		lexerApplyConsumedLexemeToSession(session, lex)
 	}
 	return out
 }
@@ -634,14 +656,36 @@ func lexerConsumeRangeFromPreTokenizedStreaming[TObservation cmp.Ordered, TState
 	if count <= 0 {
 		return nil
 	}
-	out := lexemeScratchOutReset(&session.scanCache, count)
-	out = out[:0]
-	for i := 0; i < count; i++ {
-		lex := lexerConsumeFromPreTokenizedStreaming(lexer, session)
-		out = append(out, lex)
+	session.begin()
+	defer session.end()
+	if session.lastError != nil {
+		return nil
+	}
+	toks, ok := lexerEnsurePreTokenizedStreamingCache(lexer, session)
+	if !ok {
+		return []Lexeme[TObservation, TToken, TTokenRole]{lexerBuildEOFSessionStream(lexer, session)}
+	}
+	start := session.tokenNumber - session.scanCache.baseTokenNumber
+	if start < 0 || start >= len(toks) {
+		return []Lexeme[TObservation, TToken, TTokenRole]{lexerBuildEOFSessionStream(lexer, session)}
+	}
+	end := start + count
+	if end > len(toks) {
+		end = len(toks)
+	}
+	segment := toks[start:end]
+	n := len(segment)
+	for i, lex := range segment {
 		if lex.Token == lexer.eofToken {
+			n = i + 1
 			break
 		}
+	}
+	segment = segment[:n]
+	out := lexemeScratchOutReset(&session.scanCache, len(segment))
+	copy(out, segment)
+	for _, lex := range out {
+		lexerApplyConsumedLexemeToStreaming(session, lex)
 	}
 	return out
 }
