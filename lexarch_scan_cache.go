@@ -1,12 +1,19 @@
 package lexarch
 
-import "cmp"
+import (
+	"autarch"
+	"autarch/pattern"
+	"cmp"
+	"memstruct"
+)
 
 func lexerCollectAllFromContext[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	dfa *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]],
+	resolutionStep TokenResolutionStepFn[TToken],
+	cursor memstruct.ArrayCursor[uint64],
 	cache *lexerSessionScanCache[TObservation, TToken, TTokenRole],
 	ctx scannerContext[TObservation],
-	lexerState TState,
 	newlineDetector NewlineDetector[TObservation],
 	columnAdvanceFn ColumnAdvanceFn[TObservation],
 	startLine, startCol, startToken int,
@@ -18,9 +25,11 @@ func lexerCollectAllFromContext[TObservation cmp.Ordered, TState, TToken, TToken
 	for {
 		chunk, err := lexerPeekRangeCoreInto(
 			lexer,
+			dfa,
+			resolutionStep,
+			cursor,
 			chunkScratch,
 			ctx,
-			lexerState,
 			newlineDetector,
 			columnAdvanceFn,
 			startLine,
@@ -192,21 +201,34 @@ func lexerEnsurePreTokenizedSessionCache[TObservation cmp.Ordered, TState, TToke
 	session *LexerSession[TObservation, TState, TToken, TTokenRole],
 ) ([]Lexeme[TObservation, TToken, TTokenRole], bool) {
 	if !session.scanCache.initialized || session.scanCache.mode != ScanModePreTokenizeAll {
+		dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
+		if err != nil {
+			session.lastError = &LexingError[TObservation, TToken]{
+				Position:    session.position,
+				StartLine:   session.currentLine,
+				StartColumn: session.currentColumn,
+				Reason:      LexErrNoTransition,
+				Formatter:   lexer.formatter,
+			}
+			return nil, false
+		}
 		ctx := scannerFromSliceSimulated(session)
-		toks, err := lexerCollectAllFromContext(
+		toks, lexErr := lexerCollectAllFromContext(
 			lexer,
+			dfa,
+			resolutionStep,
+			lexerSessionCursorGet(session, dfa),
 			&session.scanCache,
 			ctx,
-			session.currentState,
 			session.newlineDetector,
 			session.columnAdvanceFn,
 			session.currentLine,
 			session.currentColumn,
 			session.tokenNumber,
 		)
-		if err != nil {
-			err.Formatter = lexer.formatter
-			session.lastError = err
+		if lexErr != nil {
+			lexErr.Formatter = lexer.formatter
+			session.lastError = lexErr
 			return nil, false
 		}
 		session.scanCache.initialized = true
@@ -227,21 +249,34 @@ func lexerEnsurePreTokenizedStreamingCache[TObservation cmp.Ordered, TState, TTo
 	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
 ) ([]Lexeme[TObservation, TToken, TTokenRole], bool) {
 	if !session.scanCache.initialized || session.scanCache.mode != ScanModePreTokenizeAll {
+		dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
+		if err != nil {
+			session.lastError = &LexingError[TObservation, TToken]{
+				Position:    session.absPos,
+				StartLine:   session.currentLine,
+				StartColumn: session.currentColumn,
+				Reason:      LexErrNoTransition,
+				Formatter:   lexer.formatter,
+			}
+			return nil, false
+		}
 		ctx := scannerFromStreamingSimulated(session)
-		toks, err := lexerCollectAllFromContext(
+		toks, lexErr := lexerCollectAllFromContext(
 			lexer,
+			dfa,
+			resolutionStep,
+			streamingLexerSessionCursorGet(session, dfa),
 			&session.scanCache,
 			ctx,
-			session.currentState,
 			session.newlineDetector,
 			session.columnAdvanceFn,
 			session.currentLine,
 			session.currentColumn,
 			session.tokenNumber,
 		)
-		if err != nil {
-			err.Formatter = lexer.formatter
-			session.lastError = err
+		if lexErr != nil {
+			lexErr.Formatter = lexer.formatter
+			session.lastError = lexErr
 			return nil, false
 		}
 		session.scanCache.initialized = true
@@ -274,13 +309,26 @@ func lexerEnsureCircularWindowSessionCache[TObservation cmp.Ordered, TState, TTo
 	if need < minCount {
 		need = minCount
 	}
+	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
+	if err != nil {
+		session.lastError = &LexingError[TObservation, TToken]{
+			Position:    session.position,
+			StartLine:   session.currentLine,
+			StartColumn: session.currentColumn,
+			Reason:      LexErrNoTransition,
+			Formatter:   lexer.formatter,
+		}
+		return nil, false
+	}
 	ctx := scannerFromSliceSimulated(session)
 	coreOut := lexemeScratchCoreRangeReset(&session.scanCache, need)
-	lexemes, err := lexerPeekRangeCoreInto(
+	lexemes, lexErr := lexerPeekRangeCoreInto(
 		lexer,
+		dfa,
+		resolutionStep,
+		lexerSessionCursorGet(session, dfa),
 		coreOut,
 		ctx,
-		session.currentState,
 		session.newlineDetector,
 		session.columnAdvanceFn,
 		session.currentLine,
@@ -288,9 +336,9 @@ func lexerEnsureCircularWindowSessionCache[TObservation cmp.Ordered, TState, TTo
 		session.tokenNumber,
 		need,
 	)
-	if err != nil {
-		err.Formatter = lexer.formatter
-		session.lastError = err
+	if lexErr != nil {
+		lexErr.Formatter = lexer.formatter
+		session.lastError = lexErr
 		return nil, false
 	}
 
@@ -318,13 +366,26 @@ func lexerEnsureCircularWindowStreamingCache[TObservation cmp.Ordered, TState, T
 	if need < minCount {
 		need = minCount
 	}
+	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
+	if err != nil {
+		session.lastError = &LexingError[TObservation, TToken]{
+			Position:    session.absPos,
+			StartLine:   session.currentLine,
+			StartColumn: session.currentColumn,
+			Reason:      LexErrNoTransition,
+			Formatter:   lexer.formatter,
+		}
+		return nil, false
+	}
 	ctx := scannerFromStreamingSimulated(session)
 	coreOut := lexemeScratchCoreRangeReset(&session.scanCache, need)
-	lexemes, err := lexerPeekRangeCoreInto(
+	lexemes, lexErr := lexerPeekRangeCoreInto(
 		lexer,
+		dfa,
+		resolutionStep,
+		streamingLexerSessionCursorGet(session, dfa),
 		coreOut,
 		ctx,
-		session.currentState,
 		session.newlineDetector,
 		session.columnAdvanceFn,
 		session.currentLine,
@@ -332,9 +393,9 @@ func lexerEnsureCircularWindowStreamingCache[TObservation cmp.Ordered, TState, T
 		session.tokenNumber,
 		need,
 	)
-	if err != nil {
-		err.Formatter = lexer.formatter
-		session.lastError = err
+	if lexErr != nil {
+		lexErr.Formatter = lexer.formatter
+		session.lastError = lexErr
 		return nil, false
 	}
 

@@ -1,7 +1,10 @@
 package lexarch
 
 import (
+	"autarch"
+	"autarch/pattern"
 	"cmp"
+	"memstruct"
 	"sync/atomic"
 )
 
@@ -81,7 +84,8 @@ type StreamingLexerSession[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 
 	lastError *LexingError[TObservation, TToken]
 
-	scanCache lexerSessionScanCache[TObservation, TToken, TTokenRole]
+	scanCache  lexerSessionScanCache[TObservation, TToken, TTokenRole]
+	dfaCursors map[*autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]]]memstruct.ArrayCursor[uint64]
 
 	liveScanner      streamingScannerLiveContext[TObservation, TState, TToken, TTokenRole]
 	simulatedScanner streamingScannerSimulatedContext[TObservation, TState, TToken, TTokenRole]
@@ -197,6 +201,7 @@ func StreamingLexerSessionCreate[TObservation cmp.Ordered, TState, TToken, TToke
 		currentColumn:           1,
 		tokenNumber:             1,
 		lastError:               nil,
+		dfaCursors:              make(map[*autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]]]memstruct.ArrayCursor[uint64]),
 	}
 	streamingLexerSessionScannerContextsInit(session)
 	return session
@@ -221,6 +226,7 @@ func (s *StreamingLexerSession[TObservation, TState, TToken, TTokenRole]) Reset(
 	s.buffer = s.buffer[:0]
 	s.refillScratch = s.refillScratch[:0]
 	s.lastError = nil
+	clear(s.dfaCursors)
 	lexerSessionScanCacheResetSoft(&s.scanCache)
 	streamingLexerSessionScannerContextsInit(s)
 }

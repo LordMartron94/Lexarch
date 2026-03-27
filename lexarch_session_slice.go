@@ -1,7 +1,10 @@
 package lexarch
 
 import (
+	"autarch"
+	"autarch/pattern"
 	"cmp"
+	"memstruct"
 	"sync/atomic"
 )
 
@@ -44,7 +47,8 @@ type LexerSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 
 	lastError *LexingError[TObservation, TToken]
 
-	scanCache lexerSessionScanCache[TObservation, TToken, TTokenRole]
+	scanCache  lexerSessionScanCache[TObservation, TToken, TTokenRole]
+	dfaCursors map[*autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]]]memstruct.ArrayCursor[uint64]
 
 	liveScanner      sliceScannerLiveContext[TObservation, TState, TToken, TTokenRole]
 	simulatedScanner sliceScannerSimulatedContext[TObservation, TState, TToken, TTokenRole]
@@ -157,6 +161,7 @@ func LexerSessionCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole com
 		currentColumn:   1,
 		tokenNumber:     1,
 		lastError:       nil,
+		dfaCursors:      make(map[*autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]]]memstruct.ArrayCursor[uint64]),
 	}
 	lexerSessionScannerContextsInit(session)
 	return session
@@ -178,6 +183,7 @@ func (s *LexerSession[TObservation, TState, TToken, TTokenRole]) Reset(
 	s.currentColumn = 1
 	s.tokenNumber = 1
 	s.lastError = nil
+	clear(s.dfaCursors)
 	lexerSessionScanCacheResetSoft(&s.scanCache)
 	lexerSessionScannerContextsInit(s)
 }

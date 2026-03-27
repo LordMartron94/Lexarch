@@ -1,12 +1,19 @@
 package lexarch
 
-import "cmp"
+import (
+	"autarch"
+	"autarch/pattern"
+	"cmp"
+	"memstruct"
+)
 
 func lexerPeekRangeWithContext[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	dfa *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]],
+	resolutionStep TokenResolutionStepFn[TToken],
+	cursor memstruct.ArrayCursor[uint64],
 	out []Lexeme[TObservation, TToken, TTokenRole],
 	ctx scannerContext[TObservation],
-	lexerState TState,
 	newlineDetector NewlineDetector[TObservation],
 	columnAdvanceFn ColumnAdvanceFn[TObservation],
 	startLine int,
@@ -17,9 +24,11 @@ func lexerPeekRangeWithContext[TObservation cmp.Ordered, TState, TToken, TTokenR
 ) []Lexeme[TObservation, TToken, TTokenRole] {
 	lexemes, err := lexerPeekRangeCoreInto(
 		lexer,
+		dfa,
+		resolutionStep,
+		cursor,
 		out,
 		ctx,
-		lexerState,
 		newlineDetector,
 		columnAdvanceFn,
 		startLine,
@@ -110,6 +119,7 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 
 	token, tokenRole, endRel, found, _, lexErr := scanCoreSlice(
 		dfa,
+		lexerSessionCursorGet(session, dfa),
 		session.input,
 		session.position,
 		resolutionStep,
@@ -198,11 +208,22 @@ func LexerConsumeRange[TObservation cmp.Ordered, TState, TToken, TTokenRole comp
 	if count <= 0 || session.lastError != nil {
 		return nil
 	}
+	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
+	if err != nil {
+		session.lastError = &LexingError[TObservation, TToken]{
+			Position:    session.position,
+			StartLine:   session.currentLine,
+			StartColumn: session.currentColumn,
+			Reason:      LexErrNoTransition,
+			Formatter:   lexer.formatter,
+		}
+		return nil
+	}
 
 	ctx := scannerFromSlice(session)
 	coreOut := lexemeScratchCoreRangeReset(&session.scanCache, count)
 	lexemes := lexerPeekRangeWithContext(
-		lexer, coreOut, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
+		lexer, dfa, resolutionStep, lexerSessionCursorGet(session, dfa), coreOut, ctx, session.newlineDetector, session.columnAdvanceFn,
 		session.currentLine, session.currentColumn, session.tokenNumber, count,
 		func(err *LexingError[TObservation, TToken]) { session.lastError = err },
 	)
@@ -240,11 +261,22 @@ func LexerPeek[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	if n < 0 || session.lastError != nil {
 		return lexerBuildEOFSession(lexer, session)
 	}
+	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
+	if err != nil {
+		session.lastError = &LexingError[TObservation, TToken]{
+			Position:    session.position,
+			StartLine:   session.currentLine,
+			StartColumn: session.currentColumn,
+			Reason:      LexErrNoTransition,
+			Formatter:   lexer.formatter,
+		}
+		return lexerBuildEOFSession(lexer, session)
+	}
 
 	ctx := scannerFromSliceSimulated(session)
 	coreOut := lexemeScratchCoreRangeReset(&session.scanCache, n+1)
 	lexemes := lexerPeekRangeWithContext(
-		lexer, coreOut, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
+		lexer, dfa, resolutionStep, lexerSessionCursorGet(session, dfa), coreOut, ctx, session.newlineDetector, session.columnAdvanceFn,
 		session.currentLine, session.currentColumn, session.tokenNumber, n+1,
 		func(err *LexingError[TObservation, TToken]) { session.lastError = err },
 	)
@@ -281,11 +313,22 @@ func LexerPeekRange[TObservation cmp.Ordered, TState, TToken, TTokenRole compara
 	if count <= 0 || session.lastError != nil {
 		return nil
 	}
+	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
+	if err != nil {
+		session.lastError = &LexingError[TObservation, TToken]{
+			Position:    session.position,
+			StartLine:   session.currentLine,
+			StartColumn: session.currentColumn,
+			Reason:      LexErrNoTransition,
+			Formatter:   lexer.formatter,
+		}
+		return nil
+	}
 
 	ctx := scannerFromSliceSimulated(session)
 	coreOut := lexemeScratchCoreRangeReset(&session.scanCache, count)
 	return lexerPeekRangeWithContext(
-		lexer, coreOut, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
+		lexer, dfa, resolutionStep, lexerSessionCursorGet(session, dfa), coreOut, ctx, session.newlineDetector, session.columnAdvanceFn,
 		session.currentLine, session.currentColumn, session.tokenNumber, count,
 		func(err *LexingError[TObservation, TToken]) { session.lastError = err },
 	)
@@ -365,7 +408,14 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 	}
 
 	ctx := scannerFromStreaming(session)
-	token, role, endRel, found, _, lexErr := scanCoreStreaming(dfa, ctx.next, resolutionStep, true, lexer.nonTerminalOutcome)
+	token, role, endRel, found, _, lexErr := scanCoreStreaming(
+		dfa,
+		streamingLexerSessionCursorGet(session, dfa),
+		ctx.next,
+		resolutionStep,
+		true,
+		lexer.nonTerminalOutcome,
+	)
 
 	if lexErr != nil {
 		lexErr.Formatter = lexer.formatter
@@ -418,11 +468,22 @@ func LexerConsumeRangeStreaming[TObservation cmp.Ordered, TState, TToken, TToken
 	if count <= 0 || session.lastError != nil {
 		return nil
 	}
+	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
+	if err != nil {
+		session.lastError = &LexingError[TObservation, TToken]{
+			Position:    session.absPos,
+			StartLine:   session.currentLine,
+			StartColumn: session.currentColumn,
+			Reason:      LexErrNoTransition,
+			Formatter:   lexer.formatter,
+		}
+		return nil
+	}
 
 	ctx := scannerFromStreaming(session)
 	coreOut := lexemeScratchCoreRangeReset(&session.scanCache, count)
 	lexemes := lexerPeekRangeWithContext(
-		lexer, coreOut, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
+		lexer, dfa, resolutionStep, streamingLexerSessionCursorGet(session, dfa), coreOut, ctx, session.newlineDetector, session.columnAdvanceFn,
 		session.currentLine, session.currentColumn, session.tokenNumber, count,
 		func(err *LexingError[TObservation, TToken]) { session.lastError = err },
 	)
@@ -487,11 +548,22 @@ func LexerPeekRangeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRol
 	if count <= 0 || session.lastError != nil {
 		return nil
 	}
+	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, session.currentState)
+	if err != nil {
+		session.lastError = &LexingError[TObservation, TToken]{
+			Position:    session.absPos,
+			StartLine:   session.currentLine,
+			StartColumn: session.currentColumn,
+			Reason:      LexErrNoTransition,
+			Formatter:   lexer.formatter,
+		}
+		return nil
+	}
 
 	ctx := scannerFromStreamingSimulated(session)
 	coreOut := lexemeScratchCoreRangeReset(&session.scanCache, count)
 	return lexerPeekRangeWithContext(
-		lexer, coreOut, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
+		lexer, dfa, resolutionStep, streamingLexerSessionCursorGet(session, dfa), coreOut, ctx, session.newlineDetector, session.columnAdvanceFn,
 		session.currentLine, session.currentColumn, session.tokenNumber, count,
 		func(err *LexingError[TObservation, TToken]) { session.lastError = err },
 	)

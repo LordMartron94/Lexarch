@@ -5,6 +5,7 @@ import (
 	"autarch/pattern"
 	"cmp"
 	"fmt"
+	"memstruct"
 )
 
 func lexerGetDFAAndResolution[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
@@ -23,6 +24,30 @@ func lexerGetDFAAndResolution[TObservation cmp.Ordered, TState, TToken, TTokenRo
 	}
 
 	return dfa, resolutionStep, nil
+}
+
+func lexerSessionCursorGet[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	session *LexerSession[TObservation, TState, TToken, TTokenRole],
+	dfa *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]],
+) memstruct.ArrayCursor[uint64] {
+	if cursor, ok := session.dfaCursors[dfa]; ok {
+		return cursor
+	}
+	cursor := autarch.DFACursorGet(dfa)
+	session.dfaCursors[dfa] = cursor
+	return cursor
+}
+
+func streamingLexerSessionCursorGet[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
+	dfa *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]],
+) memstruct.ArrayCursor[uint64] {
+	if cursor, ok := session.dfaCursors[dfa]; ok {
+		return cursor
+	}
+	cursor := autarch.DFACursorGet(dfa)
+	session.dfaCursors[dfa] = cursor
+	return cursor
 }
 
 func lexemeBuild[TObservation cmp.Ordered, TToken, TTokenRole comparable](
@@ -146,23 +171,20 @@ func lexerBuildEOF[TObservation cmp.Ordered, TState, TToken, TTokenRole comparab
 	}
 }
 
-func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+func scanCoreStreaming[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	dfa *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]],
+	cursor memstruct.ArrayCursor[uint64],
 	nextObservation func(int) (obs TObservation, ok bool, err error),
 	resolutionStep TokenResolutionStepFn[TToken],
 	strictEOF bool,
 	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
 ) (bestToken TToken, role TTokenRole, bestEnd int, found bool, dfaState uint64, lexErr *LexingError[TObservation, TToken]) {
-
-	cursor := autarch.DFACursorGet(dfa)
-
 	state := uint64(0)
 	pos := 0
 
 	bestPriority := 0
 	var bestRole TTokenRole
 
-	// Diagnostic tracking
 	furthestPos := 0
 
 	for {
@@ -194,14 +216,12 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 		}
 
 		nextState, err := autarch.DFAStep(dfa, state, obs, cursor)
-
 		if err != nil || autarch.DFAIsDeadState(dfa, nextState) {
 			if found {
 				break
 			}
 
 			expected := autarch.DFAAvailableSymbols(dfa, state)
-
 			return bestToken, bestRole, bestEnd, found, state, &LexingError[TObservation, TToken]{
 				Position:    pos,
 				Furthest:    furthestPos,
@@ -215,8 +235,6 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 		}
 
 		state = nextState
-
-		// update furthest progress
 		furthestPos = pos + 1
 
 		if outcome, ok := autarch.DFAStateOutcome(dfa, state); ok && outcome.Value != nonTerminalOutcome {
@@ -237,39 +255,24 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 				found = true
 			}
 		}
-
 		pos++
 	}
 
-	// If we matched something successfully, return it
 	if found {
 		return bestToken, bestRole, bestEnd, true, state, nil
 	}
-
 	return bestToken, bestRole, bestEnd, false, state, nil
-}
-
-func scanCoreStreaming[TObservation cmp.Ordered, TToken, TTokenRole comparable](
-	dfa *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]],
-	nextObservation func(int) (obs TObservation, ok bool, err error),
-	resolutionStep TokenResolutionStepFn[TToken],
-	strictEOF bool,
-	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
-) (bestToken TToken, role TTokenRole, bestEnd int, found bool, dfaState uint64, lexErr *LexingError[TObservation, TToken]) {
-	return scanCore(dfa, nextObservation, resolutionStep, strictEOF, nonTerminalOutcome)
 }
 
 func scanCoreSlice[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	dfa *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]],
+	cursor memstruct.ArrayCursor[uint64],
 	input []TObservation,
 	offset int,
 	resolutionStep TokenResolutionStepFn[TToken],
 	strictEOF bool,
 	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
 ) (bestToken TToken, role TTokenRole, bestEnd int, found bool, dfaState uint64, lexErr *LexingError[TObservation, TToken]) {
-
-	cursor := autarch.DFACursorGet(dfa)
-
 	state := uint64(0)
 	pos := 0
 
@@ -467,25 +470,16 @@ func streamingMaybeCompact[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 
 func lexerPeekRangeCoreInto[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	dfa *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]],
+	resolutionStep TokenResolutionStepFn[TToken],
+	cursor memstruct.ArrayCursor[uint64],
 	out []Lexeme[TObservation, TToken, TTokenRole],
 	ctx scannerContext[TObservation],
-	lexerState TState,
 	newlineDetector NewlineDetector[TObservation],
 	columnAdvanceFn ColumnAdvanceFn[TObservation],
 	startLine, startCol, startToken int,
 	count int,
 ) ([]Lexeme[TObservation, TToken, TTokenRole], *LexingError[TObservation, TToken]) {
-	dfa, resolutionStep, err := lexerGetDFAAndResolution(lexer, lexerState)
-	if err != nil {
-		return nil, &LexingError[TObservation, TToken]{
-			Position:    ctx.position(),
-			StartLine:   startLine,
-			StartColumn: startCol,
-			Reason:      LexErrNoTransition,
-			Formatter:   lexer.formatter,
-		}
-	}
-
 	line := startLine
 	col := startCol
 	tokenNum := startToken
@@ -512,7 +506,7 @@ func lexerPeekRangeCoreInto[TObservation cmp.Ordered, TState, TToken, TTokenRole
 			break
 		}
 
-		token, tokenRole, raw, found, currentDFAState, lexErr := scanOne(ctx, dfa, resolutionStep, lexer.scanConfig.ForceRawCopy, lexer.nonTerminalOutcome)
+		token, tokenRole, raw, found, currentDFAState, lexErr := scanOne(ctx, dfa, cursor, resolutionStep, lexer.scanConfig.ForceRawCopy, lexer.nonTerminalOutcome)
 
 		// =====================================================
 		// scanOne produced structured error
@@ -614,6 +608,7 @@ func lexerPeekRangeCoreInto[TObservation cmp.Ordered, TState, TToken, TTokenRole
 func scanOne[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	ctx scannerContext[TObservation],
 	dfa *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]],
+	cursor memstruct.ArrayCursor[uint64],
 	resolutionStep TokenResolutionStepFn[TToken],
 	forceRawCopy bool,
 	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
@@ -625,9 +620,9 @@ func scanOne[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	)
 	if ctx.directInput != nil {
 		input, offset := ctx.directInput()
-		token, role, endRel, found, state, lexErr = scanCoreSlice(dfa, input, offset, resolutionStep, false, nonTerminalOutcome)
+		token, role, endRel, found, state, lexErr = scanCoreSlice(dfa, cursor, input, offset, resolutionStep, false, nonTerminalOutcome)
 	} else {
-		token, role, endRel, found, state, lexErr = scanCoreStreaming(dfa, ctx.next, resolutionStep, false, nonTerminalOutcome)
+		token, role, endRel, found, state, lexErr = scanCoreStreaming(dfa, cursor, ctx.next, resolutionStep, false, nonTerminalOutcome)
 	}
 
 	if lexErr != nil {
