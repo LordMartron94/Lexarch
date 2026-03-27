@@ -461,6 +461,8 @@ fmt.Printf("Token %d at line %d, column %d-%d: %s\n",
 
 10. **ObservationCTX**: Use `ObservationCTXCreate(formatter, observationDomain, toBytes)`. For runes: `LexarchRuneDomain()`, `RunesToBytesDefault()`, and `RuneFormatterDefault()` or `RuneFormatterCreate(cfg)`.
 
+11. **Debug Re-entrancy Guard**: Session misuse detection (`begin/end` re-entrancy checks) is enabled only in debug builds. Build with `-tags=debug` to enable guard panics; default builds remove this check for zero-overhead API entry paths.
+
 ## Implementation Notes
 
 ### Inline Token Resolution

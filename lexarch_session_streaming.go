@@ -5,7 +5,6 @@ import (
 	"autarch/pattern"
 	"cmp"
 	"memstruct"
-	"sync/atomic"
 )
 
 /*
@@ -80,7 +79,7 @@ type StreamingLexerSession[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 	currentColumn int // Current column number (1-indexed)
 	tokenNumber   int // Next token sequence number (1-indexed)
 
-	inUse atomic.Bool
+	inUse bool
 
 	lastError *LexingError[TObservation, TToken]
 
@@ -89,16 +88,6 @@ type StreamingLexerSession[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 
 	liveScanner      streamingScannerLiveContext[TObservation, TState, TToken, TTokenRole]
 	simulatedScanner streamingScannerSimulatedContext[TObservation, TState, TToken, TTokenRole]
-}
-
-func (s *StreamingLexerSession[TObservation, TState, TToken, TTokenRole]) begin() {
-	if !s.inUse.CompareAndSwap(false, true) {
-		panic("LexerSession is already in use (concurrent or re-entrant use detected)")
-	}
-}
-
-func (s *StreamingLexerSession[TObservation, TState, TToken, TTokenRole]) end() {
-	s.inUse.Store(false)
 }
 
 func (s *StreamingLexerSession[TObservation, TState, TToken, TTokenRole]) AbsPosition() int {
@@ -212,7 +201,7 @@ func (s *StreamingLexerSession[TObservation, TState, TToken, TTokenRole]) Reset(
 	producer ObservationProducerFn[TObservation],
 	initialState TState,
 ) {
-	if s.inUse.Load() {
+	if s.inUse {
 		panic("cannot reset active lexer session")
 	}
 

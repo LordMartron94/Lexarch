@@ -5,7 +5,6 @@ import (
 	"autarch/pattern"
 	"cmp"
 	"memstruct"
-	"sync/atomic"
 )
 
 /*
@@ -43,7 +42,7 @@ type LexerSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 	currentColumn int // Current column number (1-indexed)
 	tokenNumber   int // Next token sequence number (1-indexed)
 
-	inUse atomic.Bool
+	inUse bool
 
 	lastError *LexingError[TObservation, TToken]
 
@@ -52,16 +51,6 @@ type LexerSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 
 	liveScanner      sliceScannerLiveContext[TObservation, TState, TToken, TTokenRole]
 	simulatedScanner sliceScannerSimulatedContext[TObservation, TState, TToken, TTokenRole]
-}
-
-func (s *LexerSession[TObservation, TState, TToken, TTokenRole]) begin() {
-	if !s.inUse.CompareAndSwap(false, true) {
-		panic("LexerSession is already in use (concurrent or re-entrant use detected)")
-	}
-}
-
-func (s *LexerSession[TObservation, TState, TToken, TTokenRole]) end() {
-	s.inUse.Store(false)
 }
 
 func (s *LexerSession[TObservation, TState, TToken, TTokenRole]) Position() int {
@@ -172,7 +161,7 @@ func (s *LexerSession[TObservation, TState, TToken, TTokenRole]) Reset(
 	input []TObservation,
 	initialState TState,
 ) {
-	if s.inUse.Load() {
+	if s.inUse {
 		panic("cannot reset active lexer session")
 	}
 
