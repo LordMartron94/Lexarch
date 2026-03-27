@@ -152,6 +152,7 @@ type lexerSessionScanCache[TObservation cmp.Ordered, TToken, TTokenRole comparab
 	windowTokens     []Lexeme[TObservation, TToken, TTokenRole]
 	outScratch       []Lexeme[TObservation, TToken, TTokenRole]
 	collectScratch   []Lexeme[TObservation, TToken, TTokenRole]
+	coreRangeScratch []Lexeme[TObservation, TToken, TTokenRole]
 	coreChunkScratch []Lexeme[TObservation, TToken, TTokenRole]
 }
 
@@ -175,6 +176,7 @@ func lexerSessionScanCacheResetSoft[TObservation cmp.Ordered, TToken, TTokenRole
 	cache.windowTokens = lexerSessionScanCacheSliceResetRetain(cache.windowTokens)
 	cache.outScratch = lexerSessionScanCacheSliceResetRetain(cache.outScratch)
 	cache.collectScratch = lexerSessionScanCacheSliceResetRetain(cache.collectScratch)
+	cache.coreRangeScratch = lexerSessionScanCacheSliceResetRetain(cache.coreRangeScratch)
 	cache.coreChunkScratch = lexerSessionScanCacheSliceResetRetain(cache.coreChunkScratch)
 }
 
@@ -189,6 +191,7 @@ func lexerSessionScanCacheResetHard[TObservation cmp.Ordered, TToken, TTokenRole
 	cache.windowTokens = nil
 	cache.outScratch = nil
 	cache.collectScratch = nil
+	cache.coreRangeScratch = nil
 	cache.coreChunkScratch = nil
 }
 

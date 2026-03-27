@@ -147,6 +147,16 @@ func lexemeScratchCoreChunkReset[TObservation cmp.Ordered, TToken, TTokenRole co
 	return cache.coreChunkScratch[:0]
 }
 
+func lexemeScratchCoreRangeReset[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+	cache *lexerSessionScanCache[TObservation, TToken, TTokenRole],
+	required int,
+) []Lexeme[TObservation, TToken, TTokenRole] {
+	if cap(cache.coreRangeScratch) < required {
+		cache.coreRangeScratch = make([]Lexeme[TObservation, TToken, TTokenRole], 0, required)
+	}
+	return cache.coreRangeScratch[:0]
+}
+
 func lexerApplyConsumedLexemeToSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	session *LexerSession[TObservation, TState, TToken, TTokenRole],
 	lex Lexeme[TObservation, TToken, TTokenRole],
@@ -204,7 +214,7 @@ func lexerEnsurePreTokenizedSessionCache[TObservation cmp.Ordered, TState, TToke
 		session.scanCache.baseTokenNumber = session.tokenNumber
 		session.scanCache.preTokens = toks
 	}
-	toks, ok := lexerPreTokensGet[TObservation, TToken, TTokenRole](&session.scanCache)
+	toks, ok := lexerPreTokensGet(&session.scanCache)
 	if !ok {
 		lexerSessionScanCacheResetSoft(&session.scanCache)
 		return nil, false
@@ -239,7 +249,7 @@ func lexerEnsurePreTokenizedStreamingCache[TObservation cmp.Ordered, TState, TTo
 		session.scanCache.baseTokenNumber = session.tokenNumber
 		session.scanCache.preTokens = toks
 	}
-	toks, ok := lexerPreTokensGet[TObservation, TToken, TTokenRole](&session.scanCache)
+	toks, ok := lexerPreTokensGet(&session.scanCache)
 	if !ok {
 		lexerSessionScanCacheResetSoft(&session.scanCache)
 		return nil, false
@@ -265,8 +275,10 @@ func lexerEnsureCircularWindowSessionCache[TObservation cmp.Ordered, TState, TTo
 		need = minCount
 	}
 	ctx := scannerFromSliceSimulated(session)
-	lexemes, err := lexerPeekRangeCore(
+	coreOut := lexemeScratchCoreRangeReset(&session.scanCache, need)
+	lexemes, err := lexerPeekRangeCoreInto(
 		lexer,
+		coreOut,
 		ctx,
 		session.currentState,
 		session.newlineDetector,
@@ -294,7 +306,7 @@ func lexerEnsureCircularWindowStreamingCache[TObservation cmp.Ordered, TState, T
 	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
 	minCount int,
 ) ([]Lexeme[TObservation, TToken, TTokenRole], bool) {
-	window, ok := lexerWindowTokensGet[TObservation, TToken, TTokenRole](&session.scanCache)
+	window, ok := lexerWindowTokensGet(&session.scanCache)
 	startMatches := session.scanCache.initialized &&
 		session.scanCache.mode == ScanModeCircularTokenBuffer &&
 		session.scanCache.windowStartToken == session.tokenNumber
@@ -307,8 +319,10 @@ func lexerEnsureCircularWindowStreamingCache[TObservation cmp.Ordered, TState, T
 		need = minCount
 	}
 	ctx := scannerFromStreamingSimulated(session)
-	lexemes, err := lexerPeekRangeCore(
+	coreOut := lexemeScratchCoreRangeReset(&session.scanCache, need)
+	lexemes, err := lexerPeekRangeCoreInto(
 		lexer,
+		coreOut,
 		ctx,
 		session.currentState,
 		session.newlineDetector,

@@ -4,6 +4,7 @@ import "cmp"
 
 func lexerPeekRangeWithContext[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	out []Lexeme[TObservation, TToken, TTokenRole],
 	ctx scannerContext[TObservation],
 	lexerState TState,
 	newlineDetector NewlineDetector[TObservation],
@@ -14,8 +15,9 @@ func lexerPeekRangeWithContext[TObservation cmp.Ordered, TState, TToken, TTokenR
 	count int,
 	setLastError func(*LexingError[TObservation, TToken]),
 ) []Lexeme[TObservation, TToken, TTokenRole] {
-	lexemes, err := lexerPeekRangeCore(
+	lexemes, err := lexerPeekRangeCoreInto(
 		lexer,
+		out,
 		ctx,
 		lexerState,
 		newlineDetector,
@@ -200,8 +202,9 @@ func LexerConsumeRange[TObservation cmp.Ordered, TState, TToken, TTokenRole comp
 	}
 
 	ctx := scannerFromSlice(session)
+	coreOut := lexemeScratchCoreRangeReset(&session.scanCache, count)
 	lexemes := lexerPeekRangeWithContext(
-		lexer, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
+		lexer, coreOut, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
 		session.currentLine, session.currentColumn, session.tokenNumber, count,
 		func(err *LexingError[TObservation, TToken]) { session.lastError = err },
 	)
@@ -241,8 +244,9 @@ func LexerPeek[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	}
 
 	ctx := scannerFromSliceSimulated(session)
+	coreOut := lexemeScratchCoreRangeReset(&session.scanCache, n+1)
 	lexemes := lexerPeekRangeWithContext(
-		lexer, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
+		lexer, coreOut, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
 		session.currentLine, session.currentColumn, session.tokenNumber, n+1,
 		func(err *LexingError[TObservation, TToken]) { session.lastError = err },
 	)
@@ -281,8 +285,9 @@ func LexerPeekRange[TObservation cmp.Ordered, TState, TToken, TTokenRole compara
 	}
 
 	ctx := scannerFromSliceSimulated(session)
+	coreOut := lexemeScratchCoreRangeReset(&session.scanCache, count)
 	return lexerPeekRangeWithContext(
-		lexer, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
+		lexer, coreOut, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
 		session.currentLine, session.currentColumn, session.tokenNumber, count,
 		func(err *LexingError[TObservation, TToken]) { session.lastError = err },
 	)
@@ -417,8 +422,9 @@ func LexerConsumeRangeStreaming[TObservation cmp.Ordered, TState, TToken, TToken
 	}
 
 	ctx := scannerFromStreaming(session)
+	coreOut := lexemeScratchCoreRangeReset(&session.scanCache, count)
 	lexemes := lexerPeekRangeWithContext(
-		lexer, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
+		lexer, coreOut, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
 		session.currentLine, session.currentColumn, session.tokenNumber, count,
 		func(err *LexingError[TObservation, TToken]) { session.lastError = err },
 	)
@@ -485,8 +491,9 @@ func LexerPeekRangeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRol
 	}
 
 	ctx := scannerFromStreamingSimulated(session)
+	coreOut := lexemeScratchCoreRangeReset(&session.scanCache, count)
 	return lexerPeekRangeWithContext(
-		lexer, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
+		lexer, coreOut, ctx, session.currentState, session.newlineDetector, session.columnAdvanceFn,
 		session.currentLine, session.currentColumn, session.tokenNumber, count,
 		func(err *LexingError[TObservation, TToken]) { session.lastError = err },
 	)

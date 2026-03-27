@@ -381,30 +381,6 @@ func streamingMaybeCompact[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 	}
 }
 
-func lexerPeekRangeCore[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
-	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
-	ctx scannerContext[TObservation],
-	lexerState TState,
-	newlineDetector NewlineDetector[TObservation],
-	columnAdvanceFn ColumnAdvanceFn[TObservation],
-	startLine, startCol, startToken int,
-	count int,
-) ([]Lexeme[TObservation, TToken, TTokenRole], *LexingError[TObservation, TToken]) {
-	out := make([]Lexeme[TObservation, TToken, TTokenRole], 0, count)
-	return lexerPeekRangeCoreInto(
-		lexer,
-		out,
-		ctx,
-		lexerState,
-		newlineDetector,
-		columnAdvanceFn,
-		startLine,
-		startCol,
-		startToken,
-		count,
-	)
-}
-
 func lexerPeekRangeCoreInto[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	out []Lexeme[TObservation, TToken, TTokenRole],
