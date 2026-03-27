@@ -249,6 +249,107 @@ func scanCore[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	return bestToken, bestRole, bestEnd, false, state, nil
 }
 
+func scanCoreStreaming[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+	dfa *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]],
+	nextObservation func(int) (obs TObservation, ok bool, err error),
+	resolutionStep TokenResolutionStepFn[TToken],
+	strictEOF bool,
+	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
+) (bestToken TToken, role TTokenRole, bestEnd int, found bool, dfaState uint64, lexErr *LexingError[TObservation, TToken]) {
+	return scanCore(dfa, nextObservation, resolutionStep, strictEOF, nonTerminalOutcome)
+}
+
+func scanCoreSlice[TObservation cmp.Ordered, TToken, TTokenRole comparable](
+	dfa *autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]],
+	input []TObservation,
+	offset int,
+	resolutionStep TokenResolutionStepFn[TToken],
+	strictEOF bool,
+	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
+) (bestToken TToken, role TTokenRole, bestEnd int, found bool, dfaState uint64, lexErr *LexingError[TObservation, TToken]) {
+
+	cursor := autarch.DFACursorGet(dfa)
+
+	state := uint64(0)
+	pos := 0
+
+	bestPriority := 0
+	var bestRole TTokenRole
+
+	furthestPos := 0
+
+	for {
+		inputPos := offset + pos
+		hasObs := inputPos >= 0 && inputPos < len(input)
+		if !hasObs {
+			if strictEOF && !found {
+				expected := autarch.DFAAvailableSymbols(dfa, state)
+				if len(expected) > 0 {
+					return bestToken, bestRole, bestEnd, found, state, &LexingError[TObservation, TToken]{
+						Position:    pos,
+						Furthest:    furthestPos,
+						Expected:    expected,
+						Reason:      LexErrUnexpectedEOF,
+						DFAState:    state,
+						HasDFAState: true,
+					}
+				}
+			}
+			break
+		}
+		obs := input[inputPos]
+
+		nextState, err := autarch.DFAStep(dfa, state, obs, cursor)
+		if err != nil || autarch.DFAIsDeadState(dfa, nextState) {
+			if found {
+				break
+			}
+
+			expected := autarch.DFAAvailableSymbols(dfa, state)
+			return bestToken, bestRole, bestEnd, found, state, &LexingError[TObservation, TToken]{
+				Position:    pos,
+				Furthest:    furthestPos,
+				Found:       obs,
+				HasFound:    true,
+				Expected:    expected,
+				Reason:      LexErrNoTransition,
+				DFAState:    state,
+				HasDFAState: true,
+			}
+		}
+
+		state = nextState
+		furthestPos = pos + 1
+
+		if outcome, ok := autarch.DFAStateOutcome(dfa, state); ok && outcome.Value != nonTerminalOutcome {
+			newBest, newEnd, updated := resolutionStep(
+				outcome.Value.Token,
+				pos+1,
+				outcome.Value.Priority,
+				bestToken,
+				bestEnd,
+				bestPriority,
+			)
+
+			if updated {
+				bestToken = newBest
+				bestEnd = newEnd
+				bestPriority = outcome.Value.Priority
+				bestRole = outcome.Value.TokenRole
+				found = true
+			}
+		}
+
+		pos++
+	}
+
+	if found {
+		return bestToken, bestRole, bestEnd, true, state, nil
+	}
+
+	return bestToken, bestRole, bestEnd, false, state, nil
+}
+
 func lexerCheckEOFStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
 	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
@@ -517,8 +618,17 @@ func scanOne[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	forceRawCopy bool,
 	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
 ) (token TToken, tokenRole TTokenRole, raw []TObservation, found bool, state uint64, err *LexingError[TObservation, TToken]) {
-
-	token, role, endRel, found, state, lexErr := scanCore(dfa, ctx.next, resolutionStep, false, nonTerminalOutcome)
+	var (
+		role   TTokenRole
+		endRel int
+		lexErr *LexingError[TObservation, TToken]
+	)
+	if ctx.directInput != nil {
+		input, offset := ctx.directInput()
+		token, role, endRel, found, state, lexErr = scanCoreSlice(dfa, input, offset, resolutionStep, false, nonTerminalOutcome)
+	} else {
+		token, role, endRel, found, state, lexErr = scanCoreStreaming(dfa, ctx.next, resolutionStep, false, nonTerminalOutcome)
+	}
 
 	if lexErr != nil {
 		return token, role, nil, found, state, lexErr
@@ -539,6 +649,7 @@ func scanOne[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 type scannerContext[TObservation cmp.Ordered] struct {
 	next            func(int) (TObservation, bool, error)
 	slice           func(start, end int) []TObservation
+	directInput     func() ([]TObservation, int)
 	remaining       func() int
 	atEOF           func() bool
 	position        func() int
@@ -587,6 +698,9 @@ func sliceScannerLiveContextInit[TObservation cmp.Ordered, TState, TToken, TToke
 			base := scanner.session.position
 			return scanner.session.input[base+start : base+end]
 		},
+		directInput: func() ([]TObservation, int) {
+			return scanner.session.input, scanner.session.position
+		},
 		remaining: func() int {
 			return len(scanner.session.input) - scanner.session.position
 		},
@@ -619,6 +733,9 @@ func sliceScannerSimulatedContextInit[TObservation cmp.Ordered, TState, TToken, 
 		},
 		slice: func(start, end int) []TObservation {
 			return scanner.session.input[scanner.pos+start : scanner.pos+end]
+		},
+		directInput: func() ([]TObservation, int) {
+			return scanner.session.input, scanner.pos
 		},
 		remaining: func() int {
 			return len(scanner.session.input) - scanner.pos

@@ -108,8 +108,14 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 		return lexerBuildEOFSession(lexer, session)
 	}
 
-	ctx := scannerFromSlice(session)
-	token, tokenRole, endRel, found, _, lexErr := scanCore(dfa, ctx.next, resolutionStep, true, lexer.nonTerminalOutcome)
+	token, tokenRole, endRel, found, _, lexErr := scanCoreSlice(
+		dfa,
+		session.input,
+		session.position,
+		resolutionStep,
+		true,
+		lexer.nonTerminalOutcome,
+	)
 	if lexErr != nil {
 		lexErr.Position = session.position + lexErr.Position
 		lexErr.Furthest = session.position + lexErr.Furthest
@@ -359,7 +365,7 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 	}
 
 	ctx := scannerFromStreaming(session)
-	token, role, endRel, found, _, lexErr := scanCore(dfa, ctx.next, resolutionStep, true, lexer.nonTerminalOutcome)
+	token, role, endRel, found, _, lexErr := scanCoreStreaming(dfa, ctx.next, resolutionStep, true, lexer.nonTerminalOutcome)
 
 	if lexErr != nil {
 		lexErr.Formatter = lexer.formatter
