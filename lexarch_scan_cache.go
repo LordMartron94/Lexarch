@@ -435,11 +435,16 @@ func lexerPeekFromPreTokenizedSession[TObservation cmp.Ordered, TState, TToken, 
 	if n < 0 || session.lastError != nil {
 		return lexerBuildEOFSession(lexer, session)
 	}
-	lexemes := lexerPeekRangeFromPreTokenizedSession(lexer, session, n+1)
-	if n >= len(lexemes) {
+	toks, ok := lexerEnsurePreTokenizedSessionCache(lexer, session)
+	if !ok {
 		return lexerBuildEOFSession(lexer, session)
 	}
-	return lexemes[n]
+	base := session.tokenNumber - session.scanCache.baseTokenNumber
+	idx := base + n
+	if idx < 0 || idx >= len(toks) {
+		return lexerBuildEOFSession(lexer, session)
+	}
+	return toks[idx]
 }
 
 func lexerConsumeFromPreTokenizedSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
@@ -619,11 +624,16 @@ func lexerPeekFromPreTokenizedStreaming[TObservation cmp.Ordered, TState, TToken
 	if n < 0 || session.lastError != nil {
 		return lexerBuildEOFSessionStream(lexer, session)
 	}
-	lexemes := lexerPeekRangeFromPreTokenizedStreaming(lexer, session, n+1)
-	if n >= len(lexemes) {
+	toks, ok := lexerEnsurePreTokenizedStreamingCache(lexer, session)
+	if !ok {
 		return lexerBuildEOFSessionStream(lexer, session)
 	}
-	return lexemes[n]
+	base := session.tokenNumber - session.scanCache.baseTokenNumber
+	idx := base + n
+	if idx < 0 || idx >= len(toks) {
+		return lexerBuildEOFSessionStream(lexer, session)
+	}
+	return toks[idx]
 }
 
 func lexerConsumeFromPreTokenizedStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
