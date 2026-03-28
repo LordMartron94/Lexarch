@@ -15,6 +15,11 @@ type positionTrackingStrategy[TObservation cmp.Ordered] struct {
 	newlineDetector NewlineDetector[TObservation]
 	columnAdvanceFn ColumnAdvanceFn[TObservation]
 	tabWidth        int
+	// newlineObs and tabObs hold the newline/tab observation values as TObservation so
+	// callers can compare against them with == without an indirect function call.
+	// newlineObs is set for RuneFast and ByteFast modes; tabObs is set for RuneFast only.
+	newlineObs TObservation
+	tabObs     TObservation
 }
 
 func positionTrackingStrategyGeneric[TObservation cmp.Ordered](
@@ -30,14 +35,17 @@ func positionTrackingStrategyGeneric[TObservation cmp.Ordered](
 
 func positionTrackingStrategyRuneFast(tabWidth int) positionTrackingStrategy[rune] {
 	return positionTrackingStrategy[rune]{
-		mode:     positionTrackingModeRuneFast,
-		tabWidth: tabWidth,
+		mode:       positionTrackingModeRuneFast,
+		tabWidth:   tabWidth,
+		newlineObs: '\n',
+		tabObs:     '\t',
 	}
 }
 
 func positionTrackingStrategyByteFast() positionTrackingStrategy[byte] {
 	return positionTrackingStrategy[byte]{
-		mode: positionTrackingModeByteFast,
+		mode:       positionTrackingModeByteFast,
+		newlineObs: '\n',
 	}
 }
 
