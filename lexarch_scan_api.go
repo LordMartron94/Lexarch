@@ -126,6 +126,7 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 		session.positionTracking,
 		session.currentLine,
 		session.currentColumn,
+		lexer.scanConfig.Stats,
 	)
 	if lexErr != nil {
 		lexErr.Position = session.position + lexErr.Position
@@ -410,6 +411,7 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 		session.positionTracking,
 		session.currentLine,
 		session.currentColumn,
+		lexer.scanConfig.Stats,
 	)
 
 	if lexErr != nil {

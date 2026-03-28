@@ -4,6 +4,7 @@ import (
 	"autarch"
 	"autarch/pattern"
 	"cmp"
+	"fmt"
 	"memstruct"
 )
 
@@ -776,4 +777,55 @@ func lexerConsumeRangeFromCircularWindowStreaming[TObservation cmp.Ordered, TSta
 		}
 	}
 	return out
+}
+
+/*
+LexerSessionEnsurePreTokenizedAll materializes the pretokenized stream when the lexer uses
+ScanModePreTokenizeAll. Other modes are no-ops.
+
+Time complexity: O(input) on first call for pretokenize mode
+Space complexity: O(tokens)
+*/
+func LexerSessionEnsurePreTokenizedAll[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *LexerSession[TObservation, TState, TToken, TTokenRole],
+) error {
+	if lexer == nil || session == nil {
+		return nil
+	}
+	if lexer.scanConfig.Mode != ScanModePreTokenizeAll {
+		return nil
+	}
+	_, ok := lexerEnsurePreTokenizedSessionCache(lexer, session)
+	if ok {
+		return nil
+	}
+	if session.lastError != nil {
+		return session.lastError
+	}
+	return fmt.Errorf("lexarch: pretokenize failed")
+}
+
+/*
+StreamingLexerSessionEnsurePreTokenizedAll is the streaming-session variant of
+LexerSessionEnsurePreTokenizedAll.
+*/
+func StreamingLexerSessionEnsurePreTokenizedAll[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
+	lexer *Lexer[TObservation, TState, TToken, TTokenRole],
+	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
+) error {
+	if lexer == nil || session == nil {
+		return nil
+	}
+	if lexer.scanConfig.Mode != ScanModePreTokenizeAll {
+		return nil
+	}
+	_, ok := lexerEnsurePreTokenizedStreamingCache(lexer, session)
+	if ok {
+		return nil
+	}
+	if session.lastError != nil {
+		return session.lastError
+	}
+	return fmt.Errorf("lexarch: pretokenize failed")
 }

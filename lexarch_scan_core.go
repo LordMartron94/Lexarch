@@ -246,6 +246,7 @@ func scanCoreStreaming[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
 	tracking positionTrackingStrategy[TObservation],
 	startLine, startCol int,
+	stats *LexScanStats,
 ) (bestToken TToken, role TTokenRole, bestEnd int, found bool, dfaState uint64, endLine, endCol int, lexErr *LexingError[TObservation, TToken]) {
 	state := uint64(0)
 	pos := 0
@@ -286,6 +287,10 @@ func scanCoreStreaming[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 				}
 			}
 			break
+		}
+
+		if stats != nil {
+			stats.ObservationSteps++
 		}
 
 		nextState, err := autarch.DFAStep(dfa, state, obs, cursor)
@@ -376,6 +381,7 @@ func scanCoreSlice[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
 	tracking positionTrackingStrategy[TObservation],
 	startLine, startCol int,
+	stats *LexScanStats,
 ) (bestToken TToken, role TTokenRole, bestEnd int, found bool, dfaState uint64, endLine, endCol int, lexErr *LexingError[TObservation, TToken]) {
 	state := uint64(0)
 	pos := 0
@@ -410,6 +416,10 @@ func scanCoreSlice[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 			break
 		}
 		obs := input[inputPos]
+
+		if stats != nil {
+			stats.ObservationSteps++
+		}
 
 		nextState, err := autarch.DFAStep(dfa, state, obs, cursor)
 		if err != nil || autarch.DFAIsDeadState(dfa, nextState) {
@@ -643,7 +653,7 @@ func lexerPeekRangeCoreInto[TObservation cmp.Ordered, TState, TToken, TTokenRole
 			break
 		}
 
-		token, tokenRole, raw, found, currentDFAState, endLine, endCol, lexErr := scanOne(ctx, dfa, cursor, resolutionStep, lexer.scanConfig.ForceRawCopy, lexer.nonTerminalOutcome, positionTracking, line, col)
+		token, tokenRole, raw, found, currentDFAState, endLine, endCol, lexErr := scanOne(ctx, dfa, cursor, resolutionStep, lexer.scanConfig.ForceRawCopy, lexer.nonTerminalOutcome, positionTracking, line, col, lexer.scanConfig.Stats)
 
 		// =====================================================
 		// scanOne produced structured error
@@ -742,6 +752,7 @@ func scanOne[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
 	tracking positionTrackingStrategy[TObservation],
 	startLine, startCol int,
+	stats *LexScanStats,
 ) (token TToken, tokenRole TTokenRole, raw []TObservation, found bool, state uint64, endLine, endCol int, err *LexingError[TObservation, TToken]) {
 	var (
 		role   TTokenRole
@@ -752,9 +763,9 @@ func scanOne[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	)
 	if ctx.directInput != nil {
 		input, offset := ctx.directInput()
-		token, role, endRel, found, state, eLine, eCol, lexErr = scanCoreSlice(dfa, cursor, input, offset, resolutionStep, false, nonTerminalOutcome, tracking, startLine, startCol)
+		token, role, endRel, found, state, eLine, eCol, lexErr = scanCoreSlice(dfa, cursor, input, offset, resolutionStep, false, nonTerminalOutcome, tracking, startLine, startCol, stats)
 	} else {
-		token, role, endRel, found, state, eLine, eCol, lexErr = scanCoreStreaming(dfa, cursor, ctx.next, resolutionStep, false, nonTerminalOutcome, tracking, startLine, startCol)
+		token, role, endRel, found, state, eLine, eCol, lexErr = scanCoreStreaming(dfa, cursor, ctx.next, resolutionStep, false, nonTerminalOutcome, tracking, startLine, startCol, stats)
 	}
 
 	if lexErr != nil {

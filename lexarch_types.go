@@ -125,11 +125,22 @@ const (
 	ScanModeCircularTokenBuffer
 )
 
+/*
+LexScanStats accumulates optional scan counters when LexerScanConfig.Stats is non-nil.
+
+ObservationSteps counts DFA input observations processed (incremented in scanCoreSlice /
+scanCoreStreaming). Nil or zero disables all increments.
+*/
+type LexScanStats struct {
+	ObservationSteps uint64
+}
+
 /* LexerScanConfig configures scanner behavior and mode-specific tuning values. */
 type LexerScanConfig struct {
 	Mode               LexerScanMode
 	CircularBufferSize int
 	ForceRawCopy       bool
+	Stats              *LexScanStats
 }
 
 /* LexerScanConfigDefault returns the default scanner configuration. */
