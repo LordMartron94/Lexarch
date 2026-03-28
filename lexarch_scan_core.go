@@ -244,7 +244,9 @@ func scanCoreStreaming[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	resolutionStep TokenResolutionStepFn[TToken],
 	strictEOF bool,
 	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
-) (bestToken TToken, role TTokenRole, bestEnd int, found bool, dfaState uint64, lexErr *LexingError[TObservation, TToken]) {
+	tracking positionTrackingStrategy[TObservation],
+	startLine, startCol int,
+) (bestToken TToken, role TTokenRole, bestEnd int, found bool, dfaState uint64, endLine, endCol int, lexErr *LexingError[TObservation, TToken]) {
 	state := uint64(0)
 	pos := 0
 
@@ -253,10 +255,15 @@ func scanCoreStreaming[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 
 	furthestPos := 0
 
+	curLine := startLine
+	curCol := startCol
+	bestEndLine := startLine
+	bestEndCol := startCol
+
 	for {
 		obs, hasObs, err := nextObservation(pos)
 		if err != nil {
-			return bestToken, bestRole, bestEnd, found, state, &LexingError[TObservation, TToken]{
+			return bestToken, bestRole, bestEnd, found, state, bestEndLine, bestEndCol, &LexingError[TObservation, TToken]{
 				Position:    pos,
 				Reason:      LexErrNoTransition,
 				DFAState:    state,
@@ -268,7 +275,7 @@ func scanCoreStreaming[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 			if strictEOF && !found {
 				expected := autarch.DFAAvailableSymbols(dfa, state)
 				if len(expected) > 0 {
-					return bestToken, bestRole, bestEnd, found, state, &LexingError[TObservation, TToken]{
+					return bestToken, bestRole, bestEnd, found, state, bestEndLine, bestEndCol, &LexingError[TObservation, TToken]{
 						Position:    pos,
 						Furthest:    furthestPos,
 						Expected:    expected,
@@ -288,7 +295,7 @@ func scanCoreStreaming[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 			}
 
 			expected := autarch.DFAAvailableSymbols(dfa, state)
-			return bestToken, bestRole, bestEnd, found, state, &LexingError[TObservation, TToken]{
+			return bestToken, bestRole, bestEnd, found, state, bestEndLine, bestEndCol, &LexingError[TObservation, TToken]{
 				Position:    pos,
 				Furthest:    furthestPos,
 				Found:       obs,
@@ -302,6 +309,33 @@ func scanCoreStreaming[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 
 		state = nextState
 		furthestPos = pos + 1
+
+		// Advance inline position tracking for the current observation.
+		switch tracking.mode {
+		case positionTrackingModeRuneFast:
+			if obs == tracking.newlineObs {
+				curLine++
+				curCol = 1
+			} else if obs == tracking.tabObs {
+				curCol += tracking.tabWidth - ((curCol - 1) % tracking.tabWidth)
+			} else {
+				curCol++
+			}
+		case positionTrackingModeByteFast:
+			if obs == tracking.newlineObs {
+				curLine++
+				curCol = 1
+			} else {
+				curCol++
+			}
+		default:
+			if tracking.newlineDetector(obs) {
+				curLine++
+				curCol = 1
+			} else {
+				curCol = tracking.columnAdvanceFn(obs, curCol)
+			}
+		}
 
 		if outcome, ok := autarch.DFAStateOutcome(dfa, state); ok && outcome.Value != nonTerminalOutcome {
 			newBest, newEnd, updated := resolutionStep(
@@ -319,15 +353,17 @@ func scanCoreStreaming[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 				bestPriority = outcome.Value.Priority
 				bestRole = outcome.Value.TokenRole
 				found = true
+				bestEndLine = curLine
+				bestEndCol = curCol
 			}
 		}
 		pos++
 	}
 
 	if found {
-		return bestToken, bestRole, bestEnd, true, state, nil
+		return bestToken, bestRole, bestEnd, true, state, bestEndLine, bestEndCol, nil
 	}
-	return bestToken, bestRole, bestEnd, false, state, nil
+	return bestToken, bestRole, bestEnd, false, state, startLine, startCol, nil
 }
 
 func scanCoreSlice[TObservation cmp.Ordered, TToken, TTokenRole comparable](
@@ -338,7 +374,9 @@ func scanCoreSlice[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	resolutionStep TokenResolutionStepFn[TToken],
 	strictEOF bool,
 	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
-) (bestToken TToken, role TTokenRole, bestEnd int, found bool, dfaState uint64, lexErr *LexingError[TObservation, TToken]) {
+	tracking positionTrackingStrategy[TObservation],
+	startLine, startCol int,
+) (bestToken TToken, role TTokenRole, bestEnd int, found bool, dfaState uint64, endLine, endCol int, lexErr *LexingError[TObservation, TToken]) {
 	state := uint64(0)
 	pos := 0
 
@@ -347,6 +385,11 @@ func scanCoreSlice[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 
 	furthestPos := 0
 
+	curLine := startLine
+	curCol := startCol
+	bestEndLine := startLine
+	bestEndCol := startCol
+
 	for {
 		inputPos := offset + pos
 		hasObs := inputPos >= 0 && inputPos < len(input)
@@ -354,7 +397,7 @@ func scanCoreSlice[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 			if strictEOF && !found {
 				expected := autarch.DFAAvailableSymbols(dfa, state)
 				if len(expected) > 0 {
-					return bestToken, bestRole, bestEnd, found, state, &LexingError[TObservation, TToken]{
+					return bestToken, bestRole, bestEnd, found, state, bestEndLine, bestEndCol, &LexingError[TObservation, TToken]{
 						Position:    pos,
 						Furthest:    furthestPos,
 						Expected:    expected,
@@ -375,7 +418,7 @@ func scanCoreSlice[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 			}
 
 			expected := autarch.DFAAvailableSymbols(dfa, state)
-			return bestToken, bestRole, bestEnd, found, state, &LexingError[TObservation, TToken]{
+			return bestToken, bestRole, bestEnd, found, state, bestEndLine, bestEndCol, &LexingError[TObservation, TToken]{
 				Position:    pos,
 				Furthest:    furthestPos,
 				Found:       obs,
@@ -389,6 +432,33 @@ func scanCoreSlice[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 
 		state = nextState
 		furthestPos = pos + 1
+
+		// Advance inline position tracking for the current observation.
+		switch tracking.mode {
+		case positionTrackingModeRuneFast:
+			if obs == tracking.newlineObs {
+				curLine++
+				curCol = 1
+			} else if obs == tracking.tabObs {
+				curCol += tracking.tabWidth - ((curCol - 1) % tracking.tabWidth)
+			} else {
+				curCol++
+			}
+		case positionTrackingModeByteFast:
+			if obs == tracking.newlineObs {
+				curLine++
+				curCol = 1
+			} else {
+				curCol++
+			}
+		default:
+			if tracking.newlineDetector(obs) {
+				curLine++
+				curCol = 1
+			} else {
+				curCol = tracking.columnAdvanceFn(obs, curCol)
+			}
+		}
 
 		if outcome, ok := autarch.DFAStateOutcome(dfa, state); ok && outcome.Value != nonTerminalOutcome {
 			newBest, newEnd, updated := resolutionStep(
@@ -406,6 +476,8 @@ func scanCoreSlice[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 				bestPriority = outcome.Value.Priority
 				bestRole = outcome.Value.TokenRole
 				found = true
+				bestEndLine = curLine
+				bestEndCol = curCol
 			}
 		}
 
@@ -413,10 +485,10 @@ func scanCoreSlice[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	}
 
 	if found {
-		return bestToken, bestRole, bestEnd, true, state, nil
+		return bestToken, bestRole, bestEnd, true, state, bestEndLine, bestEndCol, nil
 	}
 
-	return bestToken, bestRole, bestEnd, false, state, nil
+	return bestToken, bestRole, bestEnd, false, state, startLine, startCol, nil
 }
 
 func lexerCheckEOFStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
@@ -571,7 +643,7 @@ func lexerPeekRangeCoreInto[TObservation cmp.Ordered, TState, TToken, TTokenRole
 			break
 		}
 
-		token, tokenRole, raw, found, currentDFAState, lexErr := scanOne(ctx, dfa, cursor, resolutionStep, lexer.scanConfig.ForceRawCopy, lexer.nonTerminalOutcome)
+		token, tokenRole, raw, found, currentDFAState, endLine, endCol, lexErr := scanOne(ctx, dfa, cursor, resolutionStep, lexer.scanConfig.ForceRawCopy, lexer.nonTerminalOutcome, positionTracking, line, col)
 
 		// =====================================================
 		// scanOne produced structured error
@@ -635,13 +707,6 @@ func lexerPeekRangeCoreInto[TObservation cmp.Ordered, TState, TToken, TTokenRole
 		// =====================================================
 		start := ctx.position()
 
-		endLine, endCol := computePositionFromSlice(
-			raw,
-			positionTracking,
-			line,
-			col,
-		)
-
 		lex := lexemeBuild(
 			lexer.formatter,
 			token,
@@ -675,25 +740,29 @@ func scanOne[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	resolutionStep TokenResolutionStepFn[TToken],
 	forceRawCopy bool,
 	nonTerminalOutcome TokenOutcome[TToken, TTokenRole],
-) (token TToken, tokenRole TTokenRole, raw []TObservation, found bool, state uint64, err *LexingError[TObservation, TToken]) {
+	tracking positionTrackingStrategy[TObservation],
+	startLine, startCol int,
+) (token TToken, tokenRole TTokenRole, raw []TObservation, found bool, state uint64, endLine, endCol int, err *LexingError[TObservation, TToken]) {
 	var (
 		role   TTokenRole
 		endRel int
 		lexErr *LexingError[TObservation, TToken]
+		eLine  int
+		eCol   int
 	)
 	if ctx.directInput != nil {
 		input, offset := ctx.directInput()
-		token, role, endRel, found, state, lexErr = scanCoreSlice(dfa, cursor, input, offset, resolutionStep, false, nonTerminalOutcome)
+		token, role, endRel, found, state, eLine, eCol, lexErr = scanCoreSlice(dfa, cursor, input, offset, resolutionStep, false, nonTerminalOutcome, tracking, startLine, startCol)
 	} else {
-		token, role, endRel, found, state, lexErr = scanCoreStreaming(dfa, cursor, ctx.next, resolutionStep, false, nonTerminalOutcome)
+		token, role, endRel, found, state, eLine, eCol, lexErr = scanCoreStreaming(dfa, cursor, ctx.next, resolutionStep, false, nonTerminalOutcome, tracking, startLine, startCol)
 	}
 
 	if lexErr != nil {
-		return token, role, nil, found, state, lexErr
+		return token, role, nil, found, state, startLine, startCol, lexErr
 	}
 
 	if !found {
-		return token, role, nil, false, state, nil
+		return token, role, nil, false, state, startLine, startCol, nil
 	}
 
 	if forceRawCopy || ctx.rawRequiresCopy {
@@ -701,7 +770,7 @@ func scanOne[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	} else {
 		raw = ctx.slice(0, endRel)
 	}
-	return token, role, raw, true, state, nil
+	return token, role, raw, true, state, eLine, eCol, nil
 }
 
 type scannerContext[TObservation cmp.Ordered] struct {

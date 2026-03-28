@@ -11,7 +11,7 @@ Key findings:
 
 | Observation | Root Cause |
 |---|---|
-| `lexerPeekRangeCoreInto` 41.34% self-time | Position tracking re-scans every raw token a second time |
+| `lexerPeekRangeCoreInto` 41.34% self-time | ~~Position tracking re-scans every raw token a second time~~ **Fixed: position tracking is now merged into the DFA scan loop** |
 | 77.07% cumulative time flows through `lexerPeekRangeCoreInto` | All multi-token peek/consume operations bottom out here |
 | `scanCoreSlice` 58.18% cumulative | Inner DFA stepping loop — one `DFAStep` call per input observation |
 | `runtime.duffcopy` 2.09s | `Lexeme` struct is 128–144 bytes and copied on every append/return |
@@ -99,14 +99,16 @@ LexerPeek(n)
        └─ lexerPeekRangeCoreInto(count = n+1)
             └─ for each token:
                  ├─ ctx.atEOF()                    [indirect call]
-                 ├─ scanOne(ctx, dfa, ...)
-                 │    └─ scanCoreSlice(dfa, cursor, input, offset, ...)
+                 ├─ scanOne(ctx, dfa, ..., tracking, line, col)
+                 │    └─ scanCoreSlice(dfa, cursor, input, offset, ..., tracking, startLine, startCol)
                  │         └─ for each observation:
                  │              ├─ autarch.DFAStep(dfa, state, obs, cursor)
                  │              ├─ autarch.DFAIsDeadState(dfa, nextState)
+                 │              ├─ inline position advance (switch on tracking.mode)
                  │              └─ autarch.DFAStateOutcome(dfa, state)   [if accepting]
                  │                   └─ resolutionStep(...)
-                 ├─ computePositionFromSlice(raw, ...)  [re-scans raw token]
+                 │                        └─ save bestEndLine/bestEndCol if updated
+                 │    returns endLine, endCol alongside raw token
                  ├─ lexemeBuild(...)                    [returns Lexeme by value]
                  ├─ append(out, lex)                    [copies Lexeme ~128 bytes]
                  └─ ctx.advanceRaw(raw)                 [indirect call]
@@ -128,47 +130,50 @@ position. This is the dominant usage pattern that drives the 77.07% cumulative f
 ### 2.2 What `lexerPeekRangeCoreInto` Does Per Token
 
 ```go
-// lexarch_scan_core.go, lines 537–669
+// lexarch_scan_core.go
 for i := 0; i < count; i++ {
     // 1. Check EOF via closure
     if ctx.atEOF() { ... break }
 
-    // 2. Run DFA scan — dispatches to scanCoreSlice for slice mode
-    token, tokenRole, raw, found, currentDFAState, lexErr :=
-        scanOne(ctx, dfa, cursor, resolutionStep, forceRawCopy, nonTerminalOutcome)
+    // 2. Run DFA scan — dispatches to scanCoreSlice for slice mode.
+    //    Position tracking happens inline inside scanCoreSlice; endLine/endCol
+    //    are returned directly rather than requiring a second pass.
+    token, tokenRole, raw, found, currentDFAState, endLine, endCol, lexErr :=
+        scanOne(ctx, dfa, cursor, resolutionStep, forceRawCopy, nonTerminalOutcome, positionTracking, line, col)
 
-    // 3. Re-scan raw token for line/column tracking  ← major self-time contributor
-    endLine, endCol := computePositionFromSlice(raw, positionTracking, line, col)
-
-    // 4. Build Lexeme value (~128 bytes)
+    // 3. Build Lexeme value (~128 bytes)
     lex := lexemeBuild(lexer.formatter, token, raw, ...)
 
-    // 5. Append to output slice — copies the Lexeme struct (duffcopy)
+    // 4. Append to output slice — copies the Lexeme struct (duffcopy)
     out = append(out, lex)
 
-    // 6. Advance the simulated position via closure
+    // 5. Advance the simulated position via closure
     ctx.advanceRaw(raw)
 }
 ```
 
-Step 3 is where 41.34% self-time lives (see Section 3 for the full explanation).
+The separate `computePositionFromSlice` call that previously appeared between steps 2
+and 3 (and accounted for 41.34% of self-time) has been eliminated. Position tracking is
+now performed inline within `scanCoreSlice` and `scanCoreStreaming` as each observation
+is processed during the DFA scan.
 
 ---
 
-## 3. Why `lexerPeekRangeCoreInto` Shows 41.34% Self-Time
+## 3. Why `lexerPeekRangeCoreInto` Showed 41.34% Self-Time (Now Fixed)
 
-The Go profiler attributes time to the innermost executing function. The 41.34% self-time
-does **not** include time inside `scanCoreSlice` (which is a separate call frame). It
-represents work done directly inside `lexerPeekRangeCoreInto` itself.
+The Go profiler attributed time to the innermost executing function. The 41.34% self-time
+did **not** include time inside `scanCoreSlice` (which is a separate call frame). It
+represented work done directly inside `lexerPeekRangeCoreInto` itself.
 
-### 3.1 Position Tracking — The Double-Scan Problem
+### 3.1 Position Tracking — The Double-Scan Problem (Fixed)
 
-After `scanOne` returns `raw` (a slice of the matched token), `lexerPeekRangeCoreInto`
-calls `computePositionFromSlice(raw, ...)`, which iterates over **every observation in
-the matched token** a second time to count newlines and advance column counters:
+**Previously**, after `scanOne` returned `raw` (a slice of the matched token),
+`lexerPeekRangeCoreInto` called `computePositionFromSlice(raw, ...)`, which iterated
+over **every observation in the matched token** a second time to count newlines and
+advance column counters:
 
 ```go
-// lexarch_scan_core.go, lines 141–161
+// OLD code — no longer present in the hot path
 func computePositionFromSliceRuneFastRunes(observations []rune, tabWidth int, ...) ... {
     for _, r := range observations {    // ← O(m) loop over every character
         if r == '\n' { line++; column = 1; continue }
@@ -178,14 +183,55 @@ func computePositionFromSliceRuneFastRunes(observations []rune, tabWidth int, ..
 }
 ```
 
-For a typical token of length `m`, the total per-token work is O(m) in `scanCoreSlice`
-plus another O(m) in `computePositionFromSlice`. This effectively **doubles the
+For a typical token of length `m`, the total per-token work was O(m) in `scanCoreSlice`
+plus another O(m) in `computePositionFromSlice`. This effectively **doubled the
 character-level iteration cost** for every token.
 
-When the Go compiler inlines `computePositionFromSlice` and its helpers
-(`computePositionFromSliceRuneFast`, `unsafeSliceAsRune`) into
-`lexerPeekRangeCoreInto`, the loop body and the branch-heavy character classification
-show up as self-time on `lexerPeekRangeCoreInto` in the pprof flat profile.
+**The fix** merges position tracking into the DFA scan loop inside `scanCoreSlice` and
+`scanCoreStreaming`. Both functions now accept the `positionTrackingStrategy`,
+`startLine`, and `startCol` and track position inline as each observation is consumed.
+When a new best match is recorded (`bestEnd` updated), the current `curLine`/`curCol`
+are saved as `bestEndLine`/`bestEndCol`. The functions return these alongside the matched
+token, eliminating the need for a second pass.
+
+The `positionTrackingStrategy` struct gained two new fields — `newlineObs` and `tabObs`
+— which store the newline and tab observation values as the concrete `TObservation` type.
+This allows the inline tracking switch to compare against them using `==` without
+indirect function calls or unsafe pointer casts:
+
+```go
+// In the DFA loop body (scanCoreSlice / scanCoreStreaming):
+switch tracking.mode {
+case positionTrackingModeRuneFast:
+    if obs == tracking.newlineObs {
+        curLine++; curCol = 1
+    } else if obs == tracking.tabObs {
+        curCol += tracking.tabWidth - ((curCol - 1) % tracking.tabWidth)
+    } else {
+        curCol++
+    }
+case positionTrackingModeByteFast:
+    if obs == tracking.newlineObs {
+        curLine++; curCol = 1
+    } else {
+        curCol++
+    }
+default:
+    if tracking.newlineDetector(obs) {
+        curLine++; curCol = 1
+    } else {
+        curCol = tracking.columnAdvanceFn(obs, curCol)
+    }
+}
+// Save position at the best match point:
+if updated {
+    bestEndLine = curLine
+    bestEndCol = curCol
+}
+```
+
+`computePositionFromSlice` is retained for error-reporting paths (cold paths only), and
+the existing `computePositionFromSlice*` family is preserved for any future callers.
 
 ### 3.2 Lexeme Construction and Copying
 
@@ -625,24 +671,24 @@ session := lexarch.LexerSessionCreateByteFast[TState, TToken, TTokenRole](
 ```
 
 These set `positionTracking.mode` to `positionTrackingModeRuneFast` /
-`positionTrackingModeByteFast`, which selects the tight `computePositionFromSliceRuneFast`
-/ `computePositionFromSliceByteFast` path (an `unsafe` reinterpret-cast + tight loop)
-instead of the generic callback-based path. This is already the most optimised position
-tracking available in the library for these types.
+`positionTrackingModeByteFast`. The inline tracking switch in `scanCoreSlice` and
+`scanCoreStreaming` uses direct `==` comparisons against the pre-stored `newlineObs` and
+`tabObs` values instead of calling the generic `newlineDetector`/`columnAdvanceFn`
+function values, which avoids indirect call overhead on the hot path.
 
 ### 10.4 Omit Position Tracking When Not Needed (Targeted Impact)
 
-Position tracking (`computePositionFromSlice`) accounts for a significant fraction of
-`lexerPeekRangeCoreInto`'s 41.34% self-time because it re-iterates every matched token.
 If downstream consumers only need token offsets (`Start`/`End`) and not line/column
 information, consider a session variant that skips position tracking entirely.
 
-This is a library-level change: adding a `positionTrackingModeNone` mode that makes
-`computePositionFromSlice` a no-op. The `EndLine`/`EndColumn` fields in the produced
-Lexemes would remain zero.
+This would be a library-level change: adding a `positionTrackingModeNone` mode. The
+inline tracking switch in `scanCoreSlice` and `scanCoreStreaming` would fall through to
+a no-op for that mode. The `EndLine`/`EndColumn` fields in the produced Lexemes would
+remain zero.
 
-**Estimated impact:** The position-tracking loop is O(m) per token, the same complexity
-as the DFA scan. Eliminating it could halve the work inside `lexerPeekRangeCoreInto`.
+**Estimated impact:** The inline position-tracking switch adds a small per-character
+overhead to the DFA loop (a mode comparison plus 1–3 conditional updates). Eliminating
+it entirely for consumers that do not need line/column data could recover that overhead.
 
 ### 10.5 Reduce `Lexeme` Struct Size (Structural Change)
 
@@ -698,10 +744,12 @@ The Lexarch profiling data reflects three distinct, separable performance phenom
    parse throughput. The benchmark must be restructured to exclude `LexerCreate` from
    the timed region.
 
-2. **`lexerPeekRangeCoreInto` 41.34% self-time** — position tracking
-   (`computePositionFromSlice`) re-iterates the matched token character-by-character
-   after `scanCoreSlice` already scanned it. Combined with the Lexeme struct copy
-   overhead, this is the dominant addressable bottleneck for the lexer itself.
+2. **`lexerPeekRangeCoreInto` 41.34% self-time** — previously caused by position
+   tracking (`computePositionFromSlice`) re-iterating the matched token
+   character-by-character after `scanCoreSlice` already scanned it. **This double-scan
+   is now fixed**: position tracking is merged into the DFA loop in `scanCoreSlice` and
+   `scanCoreStreaming`, so each character is processed once. The remaining self-time on
+   `lexerPeekRangeCoreInto` is Lexeme struct construction and append overhead.
 
 3. **`scanCoreSlice` 58.18% cumulative** — the DFA stepping loop is working correctly.
    Each token requires O(m) DFA steps where m is the token length. The only way to
@@ -713,5 +761,5 @@ The ~29ms parse time vs ~1ms target is achievable through a combination of:
   the O(k²) re-scan penalty from lookahead
 - Using integer token types to cut struct sizes and comparison costs by ~2×
 - Potentially eliminating position tracking when line/column information is not needed
-- Using `LexerSessionCreateRuneFast` / `LexerSessionCreateByteFast` for the tightest
-  position tracking path
+- Using `LexerSessionCreateRuneFast` / `LexerSessionCreateByteFast` for the most
+  efficient inline position tracking path

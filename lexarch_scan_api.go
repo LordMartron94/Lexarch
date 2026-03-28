@@ -115,7 +115,7 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 		return lexerBuildEOFSession(lexer, session)
 	}
 
-	token, tokenRole, endRel, found, _, lexErr := scanCoreSlice(
+	token, tokenRole, endRel, found, _, endLine, endCol, lexErr := scanCoreSlice(
 		dfa,
 		lexerSessionCursorGet(session, dfa),
 		session.input,
@@ -123,6 +123,9 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 		resolutionStep,
 		true,
 		lexer.nonTerminalOutcome,
+		session.positionTracking,
+		session.currentLine,
+		session.currentColumn,
 	)
 	if lexErr != nil {
 		lexErr.Position = session.position + lexErr.Position
@@ -149,13 +152,6 @@ func LexerConsume[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 	start := session.position
 	end := session.position + endRel
 	raw := session.input[start:end]
-
-	endLine, endCol := computePositionFromSlice(
-		raw,
-		session.positionTracking,
-		session.currentLine,
-		session.currentColumn,
-	)
 
 	lex := lexemeBuild(
 		lexer.formatter,
@@ -404,13 +400,16 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 	}
 
 	ctx := scannerFromStreaming(session)
-	token, role, endRel, found, _, lexErr := scanCoreStreaming(
+	token, role, endRel, found, _, endLine, endCol, lexErr := scanCoreStreaming(
 		dfa,
 		streamingLexerSessionCursorGet(session, dfa),
 		ctx.next,
 		resolutionStep,
 		true,
 		lexer.nonTerminalOutcome,
+		session.positionTracking,
+		session.currentLine,
+		session.currentColumn,
 	)
 
 	if lexErr != nil {
@@ -427,8 +426,6 @@ func LexerConsumeStreaming[TObservation cmp.Ordered, TState, TToken, TTokenRole 
 	if endRel > 0 && endRel <= len(session.buffer) {
 		raw = copyRaw(session.buffer[:endRel])
 	}
-
-	endLine, endCol := computePositionFromSlice(raw, session.positionTracking, session.currentLine, session.currentColumn)
 
 	lex := lexemeBuild(lexer.formatter, token, raw, session.absPos, session.absPos+endRel, session.currentLine, session.currentColumn, endLine, endCol, session.tokenNumber, role)
 
