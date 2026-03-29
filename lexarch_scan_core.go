@@ -396,9 +396,11 @@ func scanCoreSlice[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 	bestEndLine := startLine
 	bestEndCol := startCol
 
+	inputSize := len(input)
+
 	for {
 		inputPos := offset + pos
-		hasObs := inputPos >= 0 && inputPos < len(input)
+		hasObs := inputPos >= 0 && inputPos < inputSize
 		if !hasObs {
 			if strictEOF && !found {
 				expected := autarch.DFAAvailableSymbols(dfa, state)
@@ -446,12 +448,13 @@ func scanCoreSlice[TObservation cmp.Ordered, TToken, TTokenRole comparable](
 		// Advance inline position tracking for the current observation.
 		switch tracking.mode {
 		case positionTrackingModeRuneFast:
-			if obs == tracking.newlineObs {
+			switch obs {
+			case tracking.newlineObs:
 				curLine++
 				curCol = 1
-			} else if obs == tracking.tabObs {
+			case tracking.tabObs:
 				curCol += tracking.tabWidth - ((curCol - 1) % tracking.tabWidth)
-			} else {
+			default:
 				curCol++
 			}
 		case positionTrackingModeByteFast:
