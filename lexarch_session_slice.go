@@ -50,7 +50,6 @@ type LexerSession[TObservation cmp.Ordered, TState, TToken, TTokenRole comparabl
 	scanCache  lexerSessionScanCache[TObservation, TToken, TTokenRole]
 	dfaCursors map[*autarch.DFA[TObservation, pattern.AnnotatedOutcome[TokenOutcome[TToken, TTokenRole]]]]memstruct.ArrayCursor[uint64]
 
-	liveScanner      sliceScannerLiveContext[TObservation, TState, TToken, TTokenRole]
 	simulatedScanner sliceScannerSimulatedContext[TObservation, TState, TToken, TTokenRole]
 }
 

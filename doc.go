@@ -1,4 +1,4 @@
-// Package lexarch provides a generic, state-based lexical analysis library for tokenizing input streams.
+// Package lexarch provides a generic, state-based lexical analysis library for tokenizing input held in slices.
 //
 // The library uses deterministic finite automata (DFA) compiled from regular expression patterns
 // to efficiently recognize tokens. It supports state-based lexing where different rulesets can be
@@ -7,16 +7,12 @@
 // Key features:
 // - Generic type support for any ordered observation type (runes, bytes, tokens) and comparable token types
 // - State-based lexing with different rulesets per state
-// - Inline token resolution with zero allocations in hot paths
-// - Zero-allocation tokenization in hot paths (slice-based API)
+// - Pretokenized lexeme cache: Peek/Consume index a materialized token stream built from the session cursor
 // - Pattern-based token definitions using the autarch/pattern RegulaAST system
-// - Streaming support via callback-based observation providers with ring buffer optimization
 // - Position tracking with line numbers, column numbers, and token sequence numbers
 // - Priority-based token resolution with priority stored directly in DFA outcomes (no map lookups)
 //
-// The library provides two APIs:
-// - Slice-based API: Tokenize pre-allocated input slices (zero-allocation hot path)
-// - Streaming API: Tokenize input from observation provider callbacks (buffered, supports large streams)
+// The public API is slice-based: a LexerSession holds the full input; the lexer builds a token cache on demand.
 //
 // The library integrates with autarch for finite automaton construction and memarch for memory management.
 // All DFAs are compiled and minimized at lexer creation time, ensuring optimal runtime performance.

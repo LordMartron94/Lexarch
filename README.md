@@ -1,10 +1,10 @@
 # lexarch
 
-Generic, state-based lexical analysis library for tokenizing input streams using deterministic finite automata.
+Generic, state-based lexical analysis library for tokenizing slice-backed input using deterministic finite automata.
 
 ## Overview
 
-`lexarch` provides efficient lexical analysis (tokenization) capabilities for processing input streams into sequences of tokens. The library uses deterministic finite automata (DFA) compiled from regular expression patterns to recognize tokens with optimal runtime performance. It supports state-based lexing where different rulesets can be active depending on the current lexer state, enabling context-sensitive tokenization.
+`lexarch` provides efficient lexical analysis (tokenization) for processing in-memory observation slices into sequences of tokens. The library uses deterministic finite automata (DFA) compiled from regular expression patterns to recognize tokens with optimal runtime performance. It supports state-based lexing where different rulesets can be active depending on the current lexer state, enabling context-sensitive tokenization.
 
 Key features:
 
@@ -12,9 +12,8 @@ Key features:
 - **State-Based Lexing**: Different rulesets per state for context-sensitive tokenization
 - **Inline Token Resolution**: Zero-allocation token resolution using incremental best-match tracking
 - **Longest Match Scanning**: Automatically resolves ambiguous patterns by matching the longest possible token (configurable)
-- **Zero Allocations in Hot Paths**: Tokenization operations use pre-allocated DFAs and cursors (slice-based API)
+- **Pretokenized cache**: `LexerConsume` / `LexerPeek` index a lexeme slice materialized from the current session cursor (on demand)
 - **Pattern-Based Definitions**: Uses the `autarch/pattern` RegulaAST system for flexible pattern construction
-- **Streaming Support**: Callback-based observation providers with ring buffer optimization for tokenizing large streams without dynamic allocations
 - **Position Tracking**: Line numbers, column numbers, and token sequence numbers for error reporting and debugging
 
 ## Design Philosophy
@@ -35,9 +34,8 @@ Key features:
   - DFA minimization: O(s log s) where s is DFA states
 - **Space Complexity**:
   - Lexer: O(s * a) where s is DFA states and a is alphabet size
-  - Slice Session: O(1) - stores references and position only
-  - Streaming Session: O(bufferCapacity) - maintains buffer for lookahead
-  - Lexeme: O(m) where m is token length (slice into input for slice API, allocated copy for streaming API)
+  - Slice Session: O(1) for session fields; pretokenize cache is O(tokens) from cursor to EOF when materialized
+  - Lexeme: O(m) where m is token length (`Raw` slices into the session input when `ForceRawCopy` is false)
 
 ## Integration
 
@@ -280,109 +278,12 @@ Represents a recognized token containing:
 Maintains lexing state:
 
 - `currentState TState`: Current lexer state (use `LexerSessionSetState` to change)
-- `input []TObservation`: Input stream (reference)
+- `input []TObservation`: Input slice (reference)
 - `position int`: Current position in input (use `Position()` method; see snapshot/restore for rollback)
 
-### Streaming API
+### Lexer scan configuration
 
-The streaming API allows tokenization of input streams without requiring the full input in memory. It uses a callback **ObservationProducerFn** that writes observations into a buffer and reports EOF.
-
-#### `ObservationProducerFn[TObservation]`
-
-```go
-type ObservationProducerFn[TObservation cmp.Ordered] func(dst []TObservation) (n int, eof bool, err error)
-```
-
-The producer writes up to `len(dst)` observations into `dst` and returns how many were written. If `eof` is true, no more data will follow. If `err` is non-nil, the lexing operation fails. Returning `(0, false, nil)` is allowed (no data yet; caller may retry).
-
-#### `StreamingLexerSessionCreate[TObservation, TState, TToken](initialState TState, producer ObservationProducerFn[TObservation], newlineDetector NewlineDetector[TObservation], columnAdvanceFn ColumnAdvanceFn[TObservation], readChunkSize int, maxBufferedObservations int) *StreamingLexerSession`
-
-Creates a new streaming lexing session. The producer is called to fill an internal buffer. `readChunkSize` is how many observations to request per producer call; `maxBufferedObservations` is the hard cap on buffer size (must be at least as large as the longest possible token).
-
-#### `StreamingLexerSessionCreateRuneFast[TState, TToken, TTokenRole](initialState TState, producer ObservationProducerFn[rune], readChunkSize int, maxBufferedObservations int, tabWidth int) *StreamingLexerSession`
-
-Creates a streaming rune session with explicit fast-path position tracking (inline newline/tab handling).
-
-#### `StreamingLexerSessionCreateByteFast[TState, TToken, TTokenRole](initialState TState, producer ObservationProducerFn[byte], readChunkSize int, maxBufferedObservations int) *StreamingLexerSession`
-
-Creates a streaming byte session with explicit fast-path position tracking (inline newline/default column handling).
-
-**Example:**
-
-```go
-input := []rune("if x else y")
-position := 0
-
-producer := func(dst []rune) (n int, eof bool, err error) {
-    if position >= len(input) {
-        return 0, true, nil
-    }
-    end := position + len(dst)
-    if end > len(input) {
-        end = len(input)
-    }
-    n = copy(dst, input[position:end])
-    position += n
-    eof = position >= len(input)
-    return n, eof, nil
-}
-
-session := lexarch.StreamingLexerSessionCreate(
-    StateNormal,
-    producer,
-    lexarch.NewlineDetectorRune(),
-    lexarch.ColumnAdvanceRune(4),
-    256,
-    4096,
-)
-```
-
-#### `StreamingLexerSessionSetState[TObservation, TState, TToken](session *StreamingLexerSession, state TState)`
-
-Changes the current lexer state for a streaming session.
-
-#### `LexerConsumeStreaming`, `LexerPeekStreaming`, `LexerAssertConsumeStreaming`, `LexerAssertPeekStreaming`
-
-Same as the non-streaming Consume/Peek/Assert variants but take `*StreamingLexerSession`. Check `session.GetLastError()` for errors.
-
-**Example:**
-
-```go
-for {
-    lexeme := lexarch.LexerConsumeStreaming(lexer, session)
-    if session.GetLastError() != nil {
-        fmt.Printf("Lexing error: %v\n", session.GetLastError())
-        break
-    }
-
-    if lexeme.Token == TokenEOF {
-        fmt.Println("Reached end of input")
-        break
-    }
-
-    fmt.Printf("Token: %v, Raw: %s, Position: %d-%d, Line: %d, Column: %d\n",
-        lexeme.Token, string(lexeme.Raw), lexeme.Start, lexeme.End,
-        lexeme.StartLine, lexeme.StartColumn)
-
-    if lexeme.Token == TokenStringStart {
-        lexarch.StreamingLexerSessionSetState(session, StateString)
-    } else if lexeme.Token == TokenStringEnd {
-        lexarch.StreamingLexerSessionSetState(session, StateNormal)
-    }
-}
-```
-
-### Data Structures (streaming)
-
-#### `StreamingLexerSession[TObservation, TState, TToken]`
-
-Maintains streaming lexing state:
-
-- `currentState TState`: Current lexer state
-- `producer ObservationProducerFn[TObservation]`: Callback for observations
-- `buffer []TObservation`: Internal buffer for lookahead
-- `absPos int`: Absolute position in stream (consumed observations)
-- `eof` / buffer length: Whether EOF reached and how much is buffered
+`LexerScanConfig` carries optional `Stats` (`*LexScanStats` for observation-step counting) and `ForceRawCopy` (when true, lexeme `Raw` is copied instead of slicing the input). Pass `LexerScanConfigDefault()` or a zero value to `LexerCreate`.
 
 ### Position Tracking and Newline Detection
 
@@ -450,18 +351,15 @@ fmt.Printf("Token %d at line %d, column %d-%d: %s\n",
 - **Language Recognition**: Building tokenizers for domain-specific languages
 - **Syntax Highlighting**: Tokenizing code for editor syntax highlighting engines
 - **Data Validation**: Recognizing and validating structured input formats
-- **Streaming Processing**: Tokenizing large files or network streams without loading into memory (streaming API)
-- **Real-time Lexing**: Processing observations as they arrive from sensors or network sources (streaming API)
-
 ## Safety Guidelines
 
 ⚠️ **Important:**
 
 1. **Memory Lifetime**: Lexers hold references to allocated DFAs. Ensure allocators remain valid for the lexer's lifetime. Always call `LexerClose` when done.
 
-2. **Input Lifetime**: `Lexeme.Raw` is a slice into the original input for slice-based sessions. The input must remain valid for as long as lexemes are used. For streaming sessions, `Raw` is a copy.
+2. **Input Lifetime**: Unless `ForceRawCopy` is set, `Lexeme.Raw` slices into the session input; the input must remain valid for as long as those lexemes are used.
 
-3. **Peek Slice Lifetime**: In cached scan modes (`ScanModePreTokenizeAll`, `ScanModeCircularTokenBuffer`), `LexerPeekRange*` results are returned from session-owned reusable scratch storage. Treat returned slices as ephemeral views valid only until the next lexer call on the same session.
+3. **Peek slice lifetime**: `LexerPeekRange*` results are copied into session-owned scratch storage. Treat returned slices as ephemeral views valid only until the next lexer call on the same session.
 
 4. **State Validity**: The session's current state must have a corresponding ruleset in the lexer. Invalid states cause errors on token recognition.
 
@@ -469,17 +367,15 @@ fmt.Printf("Token %d at line %d, column %d-%d: %s\n",
 
 6. **Error handling**: When no pattern matches or on EOF, the lexer returns an EOF lexeme and may set `session.GetLastError()`. Check `GetLastError()` after Consume/Peek to detect lexing errors.
 
-7. **EOF Token**: The EOF token is returned when the end of input is reached (position >= len(input) for slice, or producer returned eof and buffer is empty for streaming). The EOF lexeme has `Raw == nil` and `Start == End`.
+7. **EOF Token**: The EOF token is returned when the end of input is reached (`position >= len(input)`). The EOF lexeme has `Raw == nil` and `Start == End`.
 
 8. **Concurrent Access**: Multiple sessions can use the same lexer concurrently, but each session should be used by a single goroutine.
 
-9. **Streaming Buffer**: For streaming sessions, `maxBufferedObservations` must be >= longest possible token. Tokens exceeding the buffer will report a buffer limit error.
+9. **ObservationCTX**: Use `ObservationCTXCreate(formatter, observationDomain, toBytes)`. For runes: `LexarchRuneDomain()`, `RunesToBytesDefault()`, and `RuneFormatterDefault()` or `RuneFormatterCreate(cfg)`.
 
-10. **ObservationCTX**: Use `ObservationCTXCreate(formatter, observationDomain, toBytes)`. For runes: `LexarchRuneDomain()`, `RunesToBytesDefault()`, and `RuneFormatterDefault()` or `RuneFormatterCreate(cfg)`.
+10. **Debug Re-entrancy Guard**: Session misuse detection (`begin/end` re-entrancy checks) is enabled only in debug builds. Build with `-tags=debug` to enable guard panics; default builds remove this check for zero-overhead API entry paths.
 
-11. **Debug Re-entrancy Guard**: Session misuse detection (`begin/end` re-entrancy checks) is enabled only in debug builds. Build with `-tags=debug` to enable guard panics; default builds remove this check for zero-overhead API entry paths.
-
-12. **Position Tracking Fast Path**: Fast position tracking is explicit and opt-in. Use `*CreateRuneFast` or `*CreateByteFast` constructors for inlined newline/column updates. Custom callback constructors preserve exact callback semantics through the generic path. The fast kernel rebinds observation slices as `[]rune` or `[]byte` via `unsafe` (no per-element type assertions); only use the rune fast path when `TObservation` is `rune`, and the byte fast path when it is `byte`.
+11. **Position Tracking Fast Path**: Fast position tracking is explicit and opt-in. Use `*CreateRuneFast` or `*CreateByteFast` constructors for inlined newline/column updates. Custom callback constructors preserve exact callback semantics through the generic path. The fast kernel rebinds observation slices as `[]rune` or `[]byte` via `unsafe` (no per-element type assertions); only use the rune fast path when `TObservation` is `rune`, and the byte fast path when it is `byte`.
 
 ## Implementation Notes
 
@@ -490,15 +386,6 @@ The lexer uses inline token resolution to eliminate allocations in the hot path.
 ### Priority Storage in DFA Outcomes
 
 Token priorities are stored directly in DFA state outcomes as part of a `TokenOutcome` struct, eliminating hash map lookups during token scanning. When a rule is compiled, its priority is embedded in the DFA outcome, allowing priority-based resolution to access priority values with zero lookups. This optimization is particularly important for large grammars with many accepting states during long token matches.
-
-### Streaming Buffer Optimization
-
-The streaming lexer uses the existing ring buffer directly for token extraction, avoiding dynamic buffer growth. During scanning, only the `bestEnd` position is tracked. After scanning completes, observations are copied directly from the ring buffer in a bounded loop (by token length). This eliminates:
-- Dynamic slice growth and reallocation
-- Two allocations per token (buffer growth + final copy)
-- GC pressure in large streaming inputs
-
-The ring buffer approach provides predictable memory usage and cache-friendly access patterns, making it suitable for high-throughput streaming scenarios.
 
 ### Longest Match Scanning
 

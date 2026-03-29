@@ -21,13 +21,6 @@ func LexerCreate[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable
 	compilationMode CompilerMode,
 	scanConfig LexerScanConfig,
 ) *Lexer[TObservation, TState, TToken, TTokenRole] {
-	if scanConfig.Mode == 0 {
-		scanConfig = LexerScanConfigDefault()
-	}
-	if scanConfig.CircularBufferSize <= 0 {
-		scanConfig.CircularBufferSize = 1
-	}
-
 	dfaAllocator := memforge.DynamicLinearAllocatorCreateFunction(uint64(memcore.KiloByte), func(currentCap, neededCap uint64) uint64 {
 		newSize := max(currentCap*2, neededCap)
 

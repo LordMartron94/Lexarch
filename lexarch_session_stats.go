@@ -3,8 +3,8 @@ package lexarch
 import "cmp"
 
 /*
-LexerSessionPreTokenizedLexemeCount returns len(preTokens) when the session cache holds a
-ScanModePreTokenizeAll stream. ok is false if not pretokenized or empty.
+LexerSessionPreTokenizedLexemeCount returns len(preTokens) when the session cache holds
+pretokenized lexemes. ok is false if not yet materialized or empty.
 
 Time complexity: O(1)
 Space complexity: O(1)
@@ -16,27 +16,7 @@ func LexerSessionPreTokenizedLexemeCount[TObservation cmp.Ordered, TState, TToke
 		return 0, false
 	}
 	c := &session.scanCache
-	if !c.initialized || c.mode != ScanModePreTokenizeAll || len(c.preTokens) == 0 {
-		return 0, false
-	}
-	return len(c.preTokens), true
-}
-
-/*
-StreamingLexerSessionPreTokenizedLexemeCount is the streaming-session counterpart of
-LexerSessionPreTokenizedLexemeCount.
-
-Time complexity: O(1)
-Space complexity: O(1)
-*/
-func StreamingLexerSessionPreTokenizedLexemeCount[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
-	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
-) (n int, ok bool) {
-	if session == nil {
-		return 0, false
-	}
-	c := &session.scanCache
-	if !c.initialized || c.mode != ScanModePreTokenizeAll || len(c.preTokens) == 0 {
+	if !c.initialized || len(c.preTokens) == 0 {
 		return 0, false
 	}
 	return len(c.preTokens), true
@@ -44,28 +24,13 @@ func StreamingLexerSessionPreTokenizedLexemeCount[TObservation cmp.Ordered, TSta
 
 /*
 LexerSessionNextTokenNumber returns the session’s next token sequence number (1-indexed),
-i.e. the cursor position in the raw lexeme stream for pretokenized mode.
+i.e. the cursor position in the raw lexeme stream relative to pretokenized materialization.
 
 Time complexity: O(1)
 Space complexity: O(1)
 */
 func LexerSessionNextTokenNumber[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
 	session *LexerSession[TObservation, TState, TToken, TTokenRole],
-) int {
-	if session == nil {
-		return 0
-	}
-	return session.tokenNumber
-}
-
-/*
-StreamingLexerSessionNextTokenNumber returns the streaming session’s next token sequence number.
-
-Time complexity: O(1)
-Space complexity: O(1)
-*/
-func StreamingLexerSessionNextTokenNumber[TObservation cmp.Ordered, TState, TToken, TTokenRole comparable](
-	session *StreamingLexerSession[TObservation, TState, TToken, TTokenRole],
 ) int {
 	if session == nil {
 		return 0

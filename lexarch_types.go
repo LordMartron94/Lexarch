@@ -15,7 +15,7 @@ tokenization operations. All patterns are compiled to minimized DFAs at creation
 optimal runtime performance.
 
 Use cases:
-- Tokenizing input streams into sequences of tokens
+- Tokenizing observation slices into sequences of tokens
 - Building parsers and language processors
 - Implementing lexical analysis for programming languages, protocols, or data formats
 
@@ -113,57 +113,37 @@ const (
 	Glushkov
 )
 
-/* LexerScanMode controls how the lexer serves Peek/Consume operations. */
-type LexerScanMode int
-
-const (
-	/* ScanModeAsIs uses direct DFA scanning for each operation. */
-	ScanModeAsIs LexerScanMode = iota + 1
-	/* ScanModePreTokenizeAll tokenizes from current session cursor once and reuses tokens by index. */
-	ScanModePreTokenizeAll
-	/* ScanModeCircularTokenBuffer keeps a bounded upcoming token window near the current cursor. */
-	ScanModeCircularTokenBuffer
-)
-
 /*
 LexScanStats accumulates optional scan counters when LexerScanConfig.Stats is non-nil.
 
-ObservationSteps counts DFA input observations processed (incremented in scanCoreSlice /
-scanCoreStreaming). Nil or zero disables all increments.
+ObservationSteps counts DFA input observations processed (incremented in scanCoreSlice).
+Nil or zero disables all increments.
 */
 type LexScanStats struct {
 	ObservationSteps uint64
 }
 
-/* LexerScanConfig configures scanner behavior and mode-specific tuning values. */
+/* LexerScanConfig configures scanner behavior (optional stats and raw-copy policy). */
 type LexerScanConfig struct {
-	Mode               LexerScanMode
-	CircularBufferSize int
-	ForceRawCopy       bool
-	Stats              *LexScanStats
+	ForceRawCopy bool
+	Stats        *LexScanStats
 }
 
 /* LexerScanConfigDefault returns the default scanner configuration. */
 func LexerScanConfigDefault() LexerScanConfig {
 	return LexerScanConfig{
-		Mode:               ScanModeAsIs,
-		CircularBufferSize: 256,
-		ForceRawCopy:       false,
+		ForceRawCopy: false,
 	}
 }
 
 type lexerSessionScanCache[TObservation cmp.Ordered, TToken, TTokenRole comparable] struct {
 	initialized bool
-	mode        LexerScanMode
 
 	baseTokenNumber int
 	preTokens       []Lexeme[TObservation, TToken, TTokenRole]
 
-	windowStartToken int
-	windowTokens     []Lexeme[TObservation, TToken, TTokenRole]
 	outScratch       []Lexeme[TObservation, TToken, TTokenRole]
 	collectScratch   []Lexeme[TObservation, TToken, TTokenRole]
-	coreRangeScratch []Lexeme[TObservation, TToken, TTokenRole]
 	coreChunkScratch []Lexeme[TObservation, TToken, TTokenRole]
 }
 
@@ -180,36 +160,11 @@ func lexerSessionScanCacheResetSoft[TObservation cmp.Ordered, TToken, TTokenRole
 	cache *lexerSessionScanCache[TObservation, TToken, TTokenRole],
 ) {
 	cache.initialized = false
-	cache.mode = 0
 	cache.baseTokenNumber = 0
 	cache.preTokens = lexerSessionScanCacheSliceResetRetain(cache.preTokens)
-	cache.windowStartToken = 0
-	cache.windowTokens = lexerSessionScanCacheSliceResetRetain(cache.windowTokens)
 	cache.outScratch = lexerSessionScanCacheSliceResetRetain(cache.outScratch)
 	cache.collectScratch = lexerSessionScanCacheSliceResetRetain(cache.collectScratch)
-	cache.coreRangeScratch = lexerSessionScanCacheSliceResetRetain(cache.coreRangeScratch)
 	cache.coreChunkScratch = lexerSessionScanCacheSliceResetRetain(cache.coreChunkScratch)
-}
-
-func lexerSessionScanCacheResetHard[TObservation cmp.Ordered, TToken, TTokenRole comparable](
-	cache *lexerSessionScanCache[TObservation, TToken, TTokenRole],
-) {
-	cache.initialized = false
-	cache.mode = 0
-	cache.baseTokenNumber = 0
-	cache.preTokens = nil
-	cache.windowStartToken = 0
-	cache.windowTokens = nil
-	cache.outScratch = nil
-	cache.collectScratch = nil
-	cache.coreRangeScratch = nil
-	cache.coreChunkScratch = nil
-}
-
-func lexerSessionScanCacheReset[TObservation cmp.Ordered, TToken, TTokenRole comparable](
-	cache *lexerSessionScanCache[TObservation, TToken, TTokenRole],
-) {
-	lexerSessionScanCacheResetSoft(cache)
 }
 
 /*

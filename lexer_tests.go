@@ -190,7 +190,6 @@ func LexarchTestLexer(t *testing.T) {
 	defer LexerClose(lexer)
 
 	testQuotedStringClassic(t, lexer)
-	testQuotedStringStreaming(t, lexer)
 }
 
 // ============================================================
@@ -229,60 +228,6 @@ func testQuotedStringClassic(t *testing.T, lexer *Lexer[rune, LexerState, TestTo
 			string(lex.Raw) == `"hello world"`,
 			fmt.Sprintf("quoted content mismatch: %q", string(lex.Raw)),
 			"quoted content preserved",
-			t,
-		)
-	}
-}
-
-// ============================================================
-// Quoted string test (streaming path)
-// ============================================================
-
-func testQuotedStringStreaming(t *testing.T, lexer *Lexer[rune, LexerState, TestToken, TokenRole]) {
-
-	input := []rune(`"hello world"`)
-
-	pos := 0
-	producer := func(dst []rune) (n int, eof bool, err error) {
-
-		if pos >= len(input) {
-			return 0, true, nil
-		}
-
-		n = min(len(dst), len(input)-pos)
-		copy(dst, input[pos:pos+n])
-		pos += n
-
-		if pos >= len(input) {
-			return n, true, nil
-		}
-
-		return n, false, nil
-	}
-
-	session := StreamingLexerSessionCreate[rune, LexerState, TestToken, TokenRole](
-		NormalState,
-		producer,
-		NewlineDetectorRune(),
-		ColumnAdvanceRune(4),
-		2, // intentionally small
-		64,
-	)
-
-	lex := LexerConsumeStreaming(lexer, session)
-
-	ftesting.Assert(
-		session.lastError == nil,
-		fmt.Sprintf("stream quoted consume error: %v", session.lastError),
-		"stream quoted consume ok",
-		t,
-	)
-
-	if session.lastError == nil {
-		ftesting.Assert(
-			lex.Token == QuotedStringToken,
-			fmt.Sprintf("stream expected QuotedStringToken got %v raw=%q", lex.Token, string(lex.Raw)),
-			"stream quoted token correct",
 			t,
 		)
 	}
