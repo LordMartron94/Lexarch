@@ -1,5 +1,7 @@
 package internal
 
+import "fmt"
+
 type TokenKind uint32
 type TokenRole uint32
 
@@ -16,4 +18,13 @@ type Token struct {
 	ByteLength uint32
 
 	// We explicitly do NOT store line + column counters, see: docs/adr/0001-token-location.md
+}
+
+type LexerInvalidContentError struct {
+	content                rune
+	byteOffset, byteLength uint32
+}
+
+func (l *LexerInvalidContentError) Error() string {
+	return fmt.Sprintf("invalid character '%c' @ %d -> %d", l.content, l.byteOffset, l.byteLength)
 }

@@ -13,6 +13,8 @@ type Token = internal.Token
 
 type LexerLexResult = internal.LexerLexResult
 
+type LexerInvalidContentError = internal.LexerInvalidContentError
+
 func LexerCreate() *Lexer {
 	return internal.LexerCreate()
 }

@@ -23,15 +23,12 @@ Targets:
 func GetMainLexerUnits(order int) []shield.Unit {
 	mainUnit := shield.UnitCreate(order, "Lexer Comprehensive")
 
-	emptyStringAtom := shield.AtomCreate(0, "EmptyString", lexRunner)
-	shield.AtomRegisterCase(emptyStringAtom, shield.CaseCreate("empty_string", "", func(output lexarch.LexerLexResult) shield.AtomResult {
+	stringAtom := shield.AtomCreate(0, "Strings", lexRunner)
+	shield.AtomRegisterCase(stringAtom, shield.CaseCreate("empty_string", "", func(output lexarch.LexerLexResult) shield.AtomResult {
 		numTokens := len(output.Tokens)
-		if output.EOF && numTokens == 0 {
-			return *shield.AtomResultSuccessCreate()
-		}
 
-		if output.EOF && numTokens != 0 {
-			return *shield.AtomResultFailureCreate("empty string had eof but produced tokens")
+		if output.LexingError != nil {
+			return *shield.AtomResultFailureCreate("empty string produced error")
 		}
 
 		if numTokens != 0 {
@@ -42,9 +39,21 @@ func GetMainLexerUnits(order int) []shield.Unit {
 			return *shield.AtomResultFailureCreate("empty string had no eof")
 		}
 
-		return *shield.AtomResultFailureCreate("unknown failure")
+		return *shield.AtomResultSuccessCreate()
 	}))
-	shield.UnitRegisterAtom(mainUnit, emptyStringAtom)
+
+	falseCase := shield.CaseCreate("false_input", "hello", func(output lexarch.LexerLexResult) shield.AtomResult {
+		if output.LexingError == nil {
+			return *shield.AtomResultFailureCreate("invalid input did not produce error")
+		}
+
+		return *shield.AtomResultSuccessCreate()
+	})
+	shield.CaseSetDescription(falseCase, "enforces invalid input results in a proper error")
+
+	shield.AtomRegisterCase(stringAtom, falseCase)
+
+	shield.UnitRegisterAtom(mainUnit, stringAtom)
 
 	return []shield.Unit{
 		*mainUnit,

@@ -1,12 +1,11 @@
 package internal
 
-import "fmt"
-
 // ----------------------------------------------------------- RESULT
 
 type LexerLexResult struct {
-	Tokens []Token
-	EOF    bool
+	Tokens      []Token
+	EOF         bool
+	LexingError error
 }
 
 // ----------------------------------------------------------- LEXER
@@ -35,15 +34,22 @@ func LexerLexContent(
 // ----------------------------------------------------------- PRIVATE HELPERS
 
 func lexContent(content string, result *LexerLexResult) {
-	if len(content) == 0 {
+	contentLength := len(content)
+	if contentLength == 0 {
 		result.EOF = true
 		return
 	}
 
 	pos := 0
-	for {
+
+	for pos < contentLength {
 		char := content[pos]
-		fmt.Printf("%03d) %s\n", pos, string(char))
+		result.LexingError = &LexerInvalidContentError{
+			content:    rune(char),
+			byteOffset: 0,
+			byteLength: 0,
+		}
+		return
 
 		pos++
 	}
