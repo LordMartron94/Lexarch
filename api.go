@@ -25,6 +25,8 @@ type LexerConfiguration = internal.LexerConfiguration
 
 type PatternCompilerMode = internal.PatternCompilerMode
 
+type ByteSpan = internal.ByteSpan
+
 func LexerConfigurationCreate() *LexerConfiguration {
 	return internal.LexerConfigurationCreate()
 }
