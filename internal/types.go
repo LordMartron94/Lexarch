@@ -1,6 +1,11 @@
 package internal
 
-import "fmt"
+import (
+	"autarch/pattern"
+	"fmt"
+)
+
+// ----------------------------------------------------------------- TOKEN
 
 type TokenKind uint32
 type TokenRole uint32
@@ -19,10 +24,7 @@ type Token struct {
 	// We explicitly do NOT store line + column counters, see: docs/adr/0001-token-location.md
 }
 
-type ByteSpan struct {
-	Offset uint32 // ~4.2billion bytes = ~4.2GiB -- should be enough for virtually any file
-	Length uint32
-}
+// ----------------------------------------------------------------- ERROR
 
 type LexerError struct {
 	msg  string
@@ -35,4 +37,56 @@ func (e *LexerError) Error() string {
 
 func (e *LexerError) Span() ByteSpan {
 	return e.area
+}
+
+// ----------------------------------------------------------------- RULE
+
+type LexingState struct {
+	descriptor string
+	rules      []LexingRule
+}
+
+func LexingStateCreate(descriptor string, rules []LexingRule) LexingState {
+	return LexingState{
+		descriptor: descriptor,
+		rules:      rules,
+	}
+}
+
+type LexingRule struct {
+	pattern  pattern.RegulaAST[rune]
+	priority int
+	kind     TokenKind
+	role     TokenRole
+}
+
+func LexingRuleCreate(pattern pattern.RegulaAST[rune], priority int, kind TokenKind, role TokenRole) LexingRule {
+	return LexingRule{
+		pattern:  pattern,
+		priority: priority,
+		kind:     kind,
+		role:     role,
+	}
+}
+
+// ----------------------------------------------------------------- TOKEN OUTCOME
+
+type TokenOutcome struct {
+	Kind     TokenKind
+	Role     TokenRole
+	Priority int
+}
+
+// ----------------------------------------------------------------- GENERIC
+
+type PatternCompilerMode uint8
+
+const (
+	PATTERN_COMPILE_GLUSHKOV PatternCompilerMode = iota + 1
+	PATTERN_COMPILE_THOMPSON
+)
+
+type ByteSpan struct {
+	Offset uint32 // ~4.2billion bytes = ~4.2GiB -- should be enough for virtually any file
+	Length uint32
 }
