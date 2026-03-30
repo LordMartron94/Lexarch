@@ -73,7 +73,16 @@ func setupTestLexer() *lexarch.Lexer {
 func GetMainLexerUnits(order int) []shield.Unit {
 	mainUnit := shield.UnitCreate(order, "Lexer Comprehensive")
 
-	sharedLexer := setupTestLexer()
+	var sharedLexer *lexarch.Lexer
+	shield.UnitSetSetupAndTeardown(mainUnit,
+		func() { sharedLexer = setupTestLexer() },
+		func() {
+			if sharedLexer != nil {
+				lexarch.LexerDestroy(sharedLexer)
+				sharedLexer = nil
+			}
+		},
+	)
 
 	lexRunner := func(input string) lexarch.LexerLexResult {
 		return lexarch.LexerLexContentFull(sharedLexer, input)
