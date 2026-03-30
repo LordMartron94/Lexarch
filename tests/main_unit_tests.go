@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"fmt"
 	"lexarch"
 	"shield"
 )
@@ -42,9 +43,26 @@ func GetMainLexerUnits(order int) []shield.Unit {
 		return *shield.AtomResultSuccessCreate()
 	}))
 
-	falseCase := shield.CaseCreate("false_input", "hello", func(output lexarch.LexerLexResult) shield.AtomResult {
+	falseCaseInput := "hello"
+	falseCase := shield.CaseCreate("false_input", falseCaseInput, func(output lexarch.LexerLexResult) shield.AtomResult {
 		if output.LexingError == nil {
 			return *shield.AtomResultFailureCreate("invalid input did not produce error")
+		}
+
+		lexErr, ok := output.LexingError.(*lexarch.LexerError)
+		if !ok {
+			return *shield.AtomResultFailureCreate(fmt.Sprintf("invalid input produced wrong error type: %T", output.LexingError))
+		}
+
+		span := lexErr.Span()
+		expectedOffset := uint32(0) // 'h' is at index 0
+		expectedLength := uint32(1) // 'h' is 1 byte long
+
+		if span.Offset != expectedOffset || span.Length != expectedLength {
+			return *shield.AtomResultFailureCreate(fmt.Sprintf(
+				"span mismatch: expected [%d:%d], got [%d:%d]",
+				expectedOffset, expectedLength, span.Offset, span.Length,
+			))
 		}
 
 		return *shield.AtomResultSuccessCreate()

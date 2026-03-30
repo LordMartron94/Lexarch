@@ -1,5 +1,7 @@
 package internal
 
+import "fmt"
+
 // ----------------------------------------------------------- RESULT
 
 type LexerLexResult struct {
@@ -44,10 +46,12 @@ func lexContent(content string, result *LexerLexResult) {
 
 	for pos < contentLength {
 		char := content[pos]
-		result.LexingError = &LexerInvalidContentError{
-			content:    rune(char),
-			byteOffset: 0,
-			byteLength: 0,
+		result.LexingError = &LexerError{
+			msg: fmt.Sprintf("invalid character '%s'", char),
+			area: ByteSpan{
+				Offset: 0,
+				Length: 0,
+			},
 		}
 		return
 
