@@ -15,11 +15,15 @@ type TokenRole = internal.TokenRole
 type Lexer = internal.Lexer
 type Token = internal.Token
 
-type LexerLexResult = internal.LexerLexResult
-type LexerError = internal.LexerError
+type LexerRuntimeError = internal.LexerRuntimeError
+type LexerValidationError = internal.LexerValidationError
+
+type LexingNextResult = internal.NextResult
 
 type LexingState = internal.LexingState
 type LexingRule = internal.LexingRule
+
+type LexingSession = internal.LexingSession
 
 type LexerConfiguration = internal.LexerConfiguration
 
@@ -67,6 +71,38 @@ func LexerDestroy(lexer *Lexer) {
 	internal.LexerDestroy(lexer)
 }
 
-func LexerLexContentFull(lexer *Lexer, content string) LexerLexResult {
-	return internal.LexerLexContentFull(lexer, content)
+func LexerLexingSessionCreate(lexer *Lexer, content string) *LexingSession {
+	return internal.LexerLexingSessionCreate(lexer, content)
+}
+
+func LexingSessionNextResultCreate() *LexingNextResult {
+	return internal.LexingSessionNextResultCreate()
+}
+
+func LexingSessionPrefillCache(session *LexingSession) error {
+	return internal.LexingSessionPrefillCache(session)
+}
+
+func LexingSessionConsume(session *LexingSession, out *LexingNextResult) {
+	internal.LexingSessionConsume(session, out)
+}
+
+func LexingSessionConsumeUnsafe(session *LexingSession, out *LexingNextResult) {
+	internal.LexingSessionConsumeUnsafe(session, out)
+}
+
+func LexingSessionPeek(session *LexingSession, out *LexingNextResult, n int) {
+	internal.LexingSessionPeek(session, out, n)
+}
+
+func LexingSessionPeekUnsafe(session *LexingSession, out *LexingNextResult, n int) {
+	internal.LexingSessionPeekUnsafe(session, out, n)
+}
+
+func LexingSessionPushState(session *LexingSession, stateDescriptor string) {
+	internal.LexingSessionPushState(session, stateDescriptor)
+}
+
+func LexingSessionPopState(session *LexingSession) {
+	internal.LexingSessionPopState(session)
 }

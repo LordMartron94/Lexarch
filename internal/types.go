@@ -26,17 +26,25 @@ type Token struct {
 
 // ----------------------------------------------------------------- ERROR
 
-type LexerError struct {
+type LexerRuntimeError struct {
 	msg  string
 	area ByteSpan
 }
 
-func (e *LexerError) Error() string {
-	return fmt.Sprintf("lexer error: %s at %d", e.msg, e.area.Offset)
+func (e *LexerRuntimeError) Error() string {
+	return fmt.Sprintf("lexer runtime error: %s at %d", e.msg, e.area.Offset)
 }
 
-func (e *LexerError) Span() ByteSpan {
+func (e *LexerRuntimeError) Span() ByteSpan {
 	return e.area
+}
+
+type LexerValidationError struct {
+	msg string
+}
+
+func (e *LexerValidationError) Error() string {
+	return fmt.Sprintf("lexer validation error: %s", e.msg)
 }
 
 // ----------------------------------------------------------------- RULE

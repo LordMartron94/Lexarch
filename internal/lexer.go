@@ -25,8 +25,8 @@ var nonTerminalOutcome = TokenOutcome{
 
 // ----------------------------------------------------------- RESULT
 
-type LexerLexResult struct {
-	Tokens      []Token
+type NextResult struct {
+	Token       *Token
 	EOF         bool
 	LexingError error
 }
@@ -103,13 +103,6 @@ func LexerConfigurationSetTokenKindFormatter(cfg *LexerConfiguration, formatter 
 	cfg.kindFormatter = formatter
 }
 
-// ----------------------------------------------------------- LEXING SESSION
-
-type LexingSession struct {
-	lexingState int
-	dfaCursor   *memstruct.ArrayCursor[uint64]
-}
-
 // ----------------------------------------------------------- LEXER
 
 type Lexer struct {
@@ -120,6 +113,7 @@ type Lexer struct {
 
 	startState int
 	stateRules []*autarch.DFA[rune, pattern.AnnotatedOutcome[TokenOutcome]]
+	stateMap   map[string]int
 
 	destroyed bool
 }
@@ -127,6 +121,7 @@ type Lexer struct {
 func LexerCreate(cfg *LexerConfiguration) *Lexer {
 	var startState int
 	stateRules := make([]*autarch.DFA[rune, pattern.AnnotatedOutcome[TokenOutcome]], len(cfg.states))
+	stateMap := make(map[string]int)
 
 	scratchAllocator := memforge.DynamicLinearAllocatorCreateFunction(
 		uint64(cfg.minScratchMem),
@@ -147,6 +142,7 @@ func LexerCreate(cfg *LexerConfiguration) *Lexer {
 				return memforge.DynamicLinearAllocatorMallocUnsafe(mainAllocator, sizeBytes, alignment)
 			},
 		)
+		stateMap[state.descriptor] = i
 
 		if state.descriptor == cfg.startState {
 			startState = i
@@ -160,6 +156,7 @@ func LexerCreate(cfg *LexerConfiguration) *Lexer {
 		scratchAllocator: scratchAllocator,
 		mainAllocator:    mainAllocator,
 		stateRules:       stateRules,
+		stateMap:         stateMap,
 	}
 }
 
@@ -169,64 +166,180 @@ func LexerDestroy(lexer *Lexer) {
 	lexer.destroyed = true
 }
 
-func LexerLexContentFull(
-	lexer *Lexer,
-	content string,
-) LexerLexResult {
-	if lexer.destroyed {
-		panic("cannot use a destroyed lexer")
+type LexingSession struct {
+	lexer *Lexer
+
+	content string
+
+	lexingStateStack []int
+
+	dfa       *autarch.DFA[rune, pattern.AnnotatedOutcome[TokenOutcome]]
+	dfaCursor *memstruct.ArrayCursor[uint64]
+
+	lexingContentCache map[uint32]Token // byte offset -> token ; TODO - if this is a perf bottleneck, find a better way to store
+
+	contentOffsetBytes uint32
+}
+
+const bottomOfStackMarker = ^int(0)
+
+func LexerLexingSessionCreate(lexer *Lexer, content string) *LexingSession {
+	dfa := lexer.stateRules[lexer.startState]
+	cursor := autarch.DFACursorGet(dfa)
+
+	return &LexingSession{
+		lexer:              lexer,
+		content:            content,
+		lexingStateStack:   []int{bottomOfStackMarker, lexer.startState}, // TODO - maybe replace with memstruct dynamic stack if faster than normal slice
+		dfa:                dfa,
+		dfaCursor:          &cursor,
+		contentOffsetBytes: 0,
+		lexingContentCache: make(map[uint32]Token),
+	}
+}
+
+func LexingSessionNextResultCreate() *NextResult {
+	return &NextResult{
+		Token:       nil,
+		EOF:         false,
+		LexingError: nil,
+	}
+}
+
+func LexingSessionPrefillCache(session *LexingSession) error {
+	// This is a no-op if there are more than 1 state rules...
+	// thus this is safe to call for clients every time
+
+	if len(session.lexer.stateRules) == 1 {
+		out := LexingSessionNextResultCreate()
+		for {
+			LexingSessionConsumeUnsafe(session, out)
+
+			if out.EOF {
+				break
+			}
+
+			if out.LexingError != nil {
+				return out.LexingError
+			}
+		}
+
+		session.contentOffsetBytes = 0
 	}
 
-	result := LexerLexResult{
-		Tokens: make([]Token, 0),
-		EOF:    false,
+	return nil
+}
+
+func LexingSessionConsume(session *LexingSession, out *NextResult) {
+	if session.lexer.destroyed {
+		out.LexingError = &LexerValidationError{
+			msg: "cannot use a destroyed lexer",
+		}
+		return
 	}
 
-	session := &LexingSession{
-		lexingState: lexer.startState,
+	advanced := lexingSessionNext(session, out)
+	session.contentOffsetBytes += uint32(advanced)
+}
+
+func LexingSessionConsumeUnsafe(session *LexingSession, out *NextResult) {
+	advanced := lexingSessionNext(session, out)
+	session.contentOffsetBytes += uint32(advanced)
+}
+
+func LexingSessionPeek(session *LexingSession, out *NextResult, n int) {
+	if session.lexer.destroyed {
+		out.LexingError = &LexerValidationError{
+			msg: "cannot use a destroyed lexer",
+		}
+		return
 	}
 
-	lexContentFull(lexer, session, content, &result)
+	startOffset := session.contentOffsetBytes
 
-	return result
+	for i := 0; i < n; i++ {
+		advanced := lexingSessionNext(session, out)
+		session.contentOffsetBytes += uint32(advanced)
+	}
+
+	session.contentOffsetBytes = startOffset
+}
+
+func LexingSessionPeekUnsafe(session *LexingSession, out *NextResult, n int) {
+	startOffset := session.contentOffsetBytes
+
+	for i := 0; i < n; i++ {
+		advanced := lexingSessionNext(session, out)
+		session.contentOffsetBytes += uint32(advanced)
+	}
+
+	session.contentOffsetBytes = startOffset
+}
+
+func LexingSessionPushState(session *LexingSession, stateDescriptor string) {
+	resolved := session.lexer.stateMap[stateDescriptor]
+	session.lexingStateStack = append(session.lexingStateStack, resolved)
+
+	lexingSessionSetDFAForState(session, resolved)
+}
+
+func LexingSessionPopState(session *LexingSession) {
+	lastIdx := len(session.lexingStateStack) - 1
+	last := session.lexingStateStack[lastIdx]
+	if last != bottomOfStackMarker {
+		session.lexingStateStack = session.lexingStateStack[:lastIdx-1]
+	}
+
+	currentIdx := len(session.lexingStateStack) - 1
+	current := session.lexingStateStack[currentIdx]
+
+	lexingSessionSetDFAForState(session, current)
 }
 
 // ----------------------------------------------------------- PRIVATE HELPERS
 
-func lexContentFull(lexer *Lexer, session *LexingSession, content string, result *LexerLexResult) {
-	contentLength := len(content)
-	if contentLength == 0 {
-		result.EOF = true
-		return
+//go:inline
+//go:nosplit
+func lexingSessionSetDFAForState(session *LexingSession, state int) {
+	dfa := session.lexer.stateRules[state]
+	cursor := autarch.DFACursorGet(dfa)
+
+	session.dfa = dfa
+	session.dfaCursor = &cursor
+}
+
+//go:inline
+//go:nosplit
+func lexingSessionNext(session *LexingSession, out *NextResult) (advanced uint32) {
+	out.Token = nil
+	out.EOF = false
+	out.LexingError = nil
+
+	if session.contentOffsetBytes >= uint32(len(session.content)) {
+		out.EOF = true
+		return 0
 	}
 
-	offset := uint32(0)
-	for {
-		spannedContent := content[offset:]
-		if len(spannedContent) == 0 {
-			return
-		}
-
-		ok, advanced := lexToken(lexer, session, spannedContent, offset, result)
-		if !ok {
-			return
-		}
-
-		offset += uint32(advanced)
+	if cachedToken, ok := session.lexingContentCache[session.contentOffsetBytes]; ok {
+		out.Token = &cachedToken
+		return cachedToken.Span.Length
 	}
+
+	spannedContent := session.content[session.contentOffsetBytes:]
+	ok, tokenAdvanced := lexToken(session, spannedContent, session.contentOffsetBytes, out)
+	if !ok {
+		return 0
+	}
+
+	return uint32(tokenAdvanced)
 }
 
 func lexToken(
-	lexer *Lexer,
 	session *LexingSession,
 	contentSlice string,
 	absoluteOffset uint32,
-	result *LexerLexResult,
+	result *NextResult,
 ) (ok bool, advancedBytes int) {
-	dfa := lexer.stateRules[session.lexingState] // TODO - implement proper state switching
-	cursor := autarch.DFACursorGet(dfa)
-	session.dfaCursor = &cursor
-
 	dfaState := autarch.StartStateID
 
 	bestToken := Token{
@@ -246,13 +359,13 @@ func lexToken(
 	for _, char := range contentSlice {
 		byteLen := uint32(utf8.RuneLen(char))
 
-		nextDFAState, err := autarch.DFAStep(dfa, dfaState, char, cursor)
+		nextDFAState, err := autarch.DFAStep(session.dfa, dfaState, char, *session.dfaCursor)
 
 		if err != nil {
 			if furthestMatchBytes != -1 {
 				break
 			}
-			result.LexingError = &LexerError{
+			result.LexingError = &LexerRuntimeError{
 				msg: fmt.Sprintf("unexpected character '%c'", char),
 				area: ByteSpan{
 					Offset: absoluteOffset + currentRelativeByte,
@@ -262,11 +375,11 @@ func lexToken(
 			return false, 0
 		}
 
-		if autarch.DFAIsDeadState(dfa, nextDFAState) {
+		if autarch.DFAIsDeadState(session.dfa, nextDFAState) {
 			if furthestMatchBytes != -1 {
 				break
 			}
-			result.LexingError = &LexerError{
+			result.LexingError = &LexerRuntimeError{
 				msg: "invalid token syntax",
 				area: ByteSpan{
 					Offset: absoluteOffset + currentRelativeByte,
@@ -278,7 +391,7 @@ func lexToken(
 
 		dfaState = nextDFAState
 
-		if outcome, isTerminal := autarch.DFAStateOutcome(dfa, dfaState); isTerminal && outcome.Value != nonTerminalOutcome {
+		if outcome, isTerminal := autarch.DFAStateOutcome(session.dfa, dfaState); isTerminal && outcome.Value != nonTerminalOutcome {
 			currentLengthBytes := int(currentRelativeByte + byteLen)
 
 			if currentLengthBytes > furthestMatchBytes {
@@ -301,7 +414,8 @@ func lexToken(
 	}
 
 	if furthestMatchBytes != -1 {
-		result.Tokens = append(result.Tokens, bestToken)
+		result.Token = &bestToken
+		session.lexingContentCache[absoluteOffset] = bestToken
 		return true, furthestMatchBytes
 	}
 

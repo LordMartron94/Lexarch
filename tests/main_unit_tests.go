@@ -81,6 +81,12 @@ func setupTestLexer() *lexarch.Lexer {
 	return lexarch.LexerCreate(cfg)
 }
 
+type LexerLexResult struct {
+	Tokens      []lexarch.Token
+	EOF         bool
+	LexingError error
+}
+
 func GetMainLexerUnits(order int) []shield.Unit {
 	mainUnit := shield.UnitCreate(order, "Lexer Comprehensive")
 
@@ -95,8 +101,32 @@ func GetMainLexerUnits(order int) []shield.Unit {
 		},
 	)
 
-	lexRunner := func(input string) lexarch.LexerLexResult {
-		return lexarch.LexerLexContentFull(sharedLexer, input)
+	lexRunner := func(input string) LexerLexResult {
+		session := lexarch.LexerLexingSessionCreate(sharedLexer, input)
+		out := lexarch.LexingSessionNextResultCreate()
+
+		var result LexerLexResult
+
+		for {
+			lexarch.LexingSessionConsume(session, out)
+
+			if out.LexingError != nil {
+				result.LexingError = out.LexingError
+				break
+			}
+
+			if out.EOF {
+				result.EOF = true
+				break
+			}
+
+			if out.Token != nil {
+				// Dereference and append the token to our batch slice for testing
+				result.Tokens = append(result.Tokens, *out.Token)
+			}
+		}
+
+		return result
 	}
 
 	// ---------------------------------------------------------
@@ -104,7 +134,7 @@ func GetMainLexerUnits(order int) []shield.Unit {
 	// ---------------------------------------------------------
 	boundaryAtom := shield.AtomCreate(0, "Boundary Conditions", lexRunner)
 
-	emptyCase := shield.CaseCreate("empty_string", "", func(output lexarch.LexerLexResult) shield.AtomResult {
+	emptyCase := shield.CaseCreate("empty_string", "", func(output LexerLexResult) shield.AtomResult {
 		if output.LexingError != nil {
 			return *shield.AtomResultFailureCreate("empty string produced unexpected error")
 		}
@@ -140,12 +170,12 @@ func GetMainLexerUnits(order int) []shield.Unit {
 		tc := tc
 		cleanInput, expectedOffset := parseMarkedInput(tc.marked)
 
-		testCase := shield.CaseCreate(tc.name, cleanInput, func(output lexarch.LexerLexResult) shield.AtomResult {
+		testCase := shield.CaseCreate(tc.name, cleanInput, func(output LexerLexResult) shield.AtomResult {
 			if output.LexingError == nil {
 				return *shield.AtomResultFailureCreate("expected lexing error, but got nil")
 			}
 
-			lexErr, ok := output.LexingError.(*lexarch.LexerError)
+			lexErr, ok := output.LexingError.(*lexarch.LexerRuntimeError)
 			if !ok {
 				return *shield.AtomResultFailureCreate(fmt.Sprintf("wrong error type: %T", output.LexingError))
 			}
@@ -167,9 +197,40 @@ func GetMainLexerUnits(order int) []shield.Unit {
 	shield.UnitRegisterAtom(mainUnit, errorAtom)
 
 	// ---------------------------------------------------------
-	// Valid Token Sequences
+	// Valid Token Sequences (Lazy)
 	// ---------------------------------------------------------
-	validTokenAtom := shield.AtomCreate(2, "Valid Token Sequences", lexRunner)
+	validTokenAtomLazy := shield.AtomCreate(2, "Valid Token Sequences (Lazy)", lexRunner)
+
+	// Create a second runner specifically for testing the prefill cache
+	prefillLexRunner := func(input string) LexerLexResult {
+		session := lexarch.LexerLexingSessionCreate(sharedLexer, input)
+
+		err := lexarch.LexingSessionPrefillCache(session)
+		if err != nil {
+			return LexerLexResult{LexingError: err}
+		}
+
+		out := lexarch.LexingSessionNextResultCreate()
+		var result LexerLexResult
+
+		for {
+			lexarch.LexingSessionConsume(session, out)
+			if out.LexingError != nil {
+				result.LexingError = out.LexingError
+				break
+			}
+			if out.EOF {
+				result.EOF = true
+				break
+			}
+			if out.Token != nil {
+				result.Tokens = append(result.Tokens, *out.Token)
+			}
+		}
+		return result
+	}
+
+	validTokenAtomPrefill := shield.AtomCreate(3, "Valid Token Sequences (Prefilled)", prefillLexRunner)
 
 	validTests := []struct {
 		name  string
@@ -214,17 +275,29 @@ func GetMainLexerUnits(order int) []shield.Unit {
 			input += s.text
 		}
 
-		testCase := shield.CaseCreate(tc.name, input, func(output lexarch.LexerLexResult) shield.AtomResult {
+		// 1. Register for Lazy Evaluation
+		lazyCase := shield.CaseCreate(tc.name, input, func(output LexerLexResult) shield.AtomResult {
 			if output.LexingError != nil {
 				return *shield.AtomResultFailureCreate(fmt.Sprintf("unexpected lexing error: %v", output.LexingError))
 			}
 			return *assertTokenSpecs(output.Tokens, tc.specs)
 		})
+		shield.CaseSetDescription(lazyCase, fmt.Sprintf("validates sequence for synthesized input %q (lazy)", input))
+		shield.AtomRegisterCase(validTokenAtomLazy, lazyCase)
 
-		shield.CaseSetDescription(testCase, fmt.Sprintf("validates sequence for synthesized input %q", input))
-		shield.AtomRegisterCase(validTokenAtom, testCase)
+		// 2. Register for Prefilled Evaluation
+		prefillCase := shield.CaseCreate(tc.name, input, func(output LexerLexResult) shield.AtomResult {
+			if output.LexingError != nil {
+				return *shield.AtomResultFailureCreate(fmt.Sprintf("unexpected lexing error: %v", output.LexingError))
+			}
+			return *assertTokenSpecs(output.Tokens, tc.specs)
+		})
+		shield.CaseSetDescription(prefillCase, fmt.Sprintf("validates sequence for synthesized input %q (prefilled)", input))
+		shield.AtomRegisterCase(validTokenAtomPrefill, prefillCase)
 	}
-	shield.UnitRegisterAtom(mainUnit, validTokenAtom)
+
+	shield.UnitRegisterAtom(mainUnit, validTokenAtomLazy)
+	shield.UnitRegisterAtom(mainUnit, validTokenAtomPrefill)
 
 	return []shield.Unit{*mainUnit}
 }
