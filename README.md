@@ -173,3 +173,21 @@ This indicates the benchmark is largely allocation-stable and not dominated by G
 Interpretation rule for regressions: prioritize changes in `throughput.chars_per_sec` and
 `throughput.tokens_per_sec`, then use `time/op` as a secondary metric after normalizing for
 `chars/op` and `tokens/op`.
+
+### Known Perf Pitfall (Current Architecture)
+
+In the current lexer design, caching the current state ID as a separate fast-path field
+(instead of resolving from stack top when needed) is a measured regression.
+
+Reason: push/pop/set paths already synchronize DFA and stack state; adding an extra cached
+state ID introduces additional sync/update work on mutation paths without reducing enough
+hot-loop cost to offset it.
+
+Observed regression from benchmark comparison:
+
+- `Corpus=medium`: `+22.6%` slower
+- `Corpus=small`: `+13.4%` slower
+- `Corpus=large`: `+6.8%` slower
+
+GC and heap deltas stayed flat (`gc x1.00`, `heapΔ x1.00`), indicating this is CPU/control-path
+overhead rather than allocation pressure.

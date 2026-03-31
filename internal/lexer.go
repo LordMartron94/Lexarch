@@ -454,6 +454,11 @@ func lexingSessionNext(session *LexingSession, out *NextResult) (advanced uint32
 	out.Token = nil
 	out.LexingError = nil
 
+	// Perf note:
+	// Do not add a separate cached "current state id" field here.
+	// In the current architecture, stack mutations (push/pop/set/restore) already perform
+	// DFA + stack synchronization. Keeping an extra cached state id adds update/sync work on
+	// those mutation paths and regressed benchmark throughput in measured runs.
 	currentState := session.lexingStateStack[len(session.lexingStateStack)-1]
 
 	if session.contentOffsetBytes >= uint32(len(session.content)) {
