@@ -462,15 +462,12 @@ func lexingSessionNext(session *LexingSession, out *NextResult) (advanced uint32
 	currentState := session.lexingStateStack[len(session.lexingStateStack)-1]
 
 	if session.contentOffsetBytes >= uint32(len(session.content)) {
-		out.Token = &Token{
-			Kind:   EOFToken,
-			Role:   SentinelTokenRole,
-			FileID: session.fileID,
-			Span: ByteSpan{
-				Offset: 0,
-				Length: 0,
-			},
-		}
+		session.tempToken.Kind = EOFToken
+		session.tempToken.Role = SentinelTokenRole
+		session.tempToken.Span.Offset = 0
+		session.tempToken.Span.Length = 0
+
+		out.Token = session.tempToken
 		return 0
 	}
 
@@ -581,12 +578,12 @@ func failWithUnexpectedChar(session *LexingSession, result *NextResult, absOffse
 		Length: uint32(charLen),
 	}
 
-	result.Token = &Token{
-		Kind:   ErrorToken,
-		Role:   SentinelTokenRole,
-		FileID: session.fileID,
-		Span:   currentSpan,
-	}
+	session.tempToken.Kind = ErrorToken
+	session.tempToken.Role = SentinelTokenRole
+	session.tempToken.Span = currentSpan
+
+	result.Token = session.tempToken
+
 	result.LexingError = &LexerRuntimeError{
 		msg:  fmt.Sprintf("unexpected character '%c'", char),
 		area: currentSpan,
@@ -606,12 +603,12 @@ func failWithInvalidSyntax(session *LexingSession, result *NextResult, absOffset
 		Length: uint32(charLen),
 	}
 
-	result.Token = &Token{
-		Kind:   ErrorToken,
-		Role:   SentinelTokenRole,
-		FileID: session.fileID,
-		Span:   currentSpan,
-	}
+	session.tempToken.Kind = ErrorToken
+	session.tempToken.Role = SentinelTokenRole
+	session.tempToken.Span = currentSpan
+
+	result.Token = session.tempToken
+
 	result.LexingError = &LexerRuntimeError{
 		msg:  "invalid token syntax",
 		area: currentSpan,
