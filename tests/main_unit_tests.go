@@ -10,13 +10,13 @@ import (
 
 /*
 Features I want to support:
-- Pre-Lex
-- Lex On-Demand
+- Pre-Lex - Done
+- Lex On-Demand - Done
 - Helpers for keeping track of columns/lines
-- Multiple lexer states
-- Clear disambiguation (longest then priority)
-- Consume vs. Peek
-- Snapshot & Restore
+- Multiple lexer states - Done
+- Clear disambiguation (longest then priority) - Done
+- Consume vs. Peek - Done
+- Snapshot & Restore - Done
 
 Targets:
 - At a bare minimum, 100k tokens per second
@@ -247,6 +247,104 @@ func GetMainLexerUnits(order int) []shield.Unit {
 
 	shield.UnitRegisterAtom(mainUnit, validTokenAtomLazy)
 	shield.UnitRegisterAtom(mainUnit, validTokenAtomPrefill)
+
+	// ---------------------------------------------------------
+	// BYTE SPAN -> POSITION MAPPING
+	// ---------------------------------------------------------
+	type PositionMappingCase struct {
+		span     lexarch.ByteSpan
+		source   string
+		expected lexarch.LexingPosition
+	}
+
+	positionRunner := func(tc PositionMappingCase) lexarch.LexingPosition {
+		return lexarch.LexerByteSpanToPosition(tc.span, tc.source, 4)
+	}
+
+	positionAtom := shield.AtomCreate(4, "Byte Span To Position", positionRunner)
+
+	positionCases := []struct {
+		name string
+		tc   PositionMappingCase
+	}{
+		{
+			name: "single_line_ascii",
+			tc: PositionMappingCase{
+				span:   lexarch.ByteSpan{Offset: 4, Length: 3}, // "def"
+				source: "abc def",
+				expected: lexarch.LexingPosition{
+					StartLine:   1,
+					StartColumn: 5,
+					EndLine:     1,
+					EndColumn:   8,
+				},
+			},
+		},
+		{
+			name: "zero_length_at_start",
+			tc: PositionMappingCase{
+				span:   lexarch.ByteSpan{Offset: 0, Length: 0},
+				source: "abc",
+				expected: lexarch.LexingPosition{
+					StartLine:   1,
+					StartColumn: 1,
+					EndLine:     1,
+					EndColumn:   1,
+				},
+			},
+		},
+		{
+			name: "cross_line_span",
+			tc: PositionMappingCase{
+				span:   lexarch.ByteSpan{Offset: 1, Length: 4}, // "b\ncd"
+				source: "ab\ncd\nef",
+				expected: lexarch.LexingPosition{
+					StartLine:   1,
+					StartColumn: 2,
+					EndLine:     2,
+					EndColumn:   3,
+				},
+			},
+		},
+		{
+			name: "utf8_rune_column_tracking",
+			tc: PositionMappingCase{
+				span:   lexarch.ByteSpan{Offset: 4, Length: 2}, // "β" (2 bytes)
+				source: "aé\nβz",
+				expected: lexarch.LexingPosition{
+					StartLine:   2,
+					StartColumn: 1,
+					EndLine:     2,
+					EndColumn:   2,
+				},
+			},
+		},
+	}
+
+	for _, c := range positionCases {
+		c := c
+		testCase := shield.CaseCreate(c.name, c.tc, func(output lexarch.LexingPosition) shield.AtomResult {
+			if output.StartLine != c.tc.expected.StartLine ||
+				output.StartColumn != c.tc.expected.StartColumn ||
+				output.EndLine != c.tc.expected.EndLine ||
+				output.EndColumn != c.tc.expected.EndColumn {
+				return *shield.AtomResultFailureCreate(fmt.Sprintf(
+					"position mismatch: expected [%d:%d -> %d:%d], got [%d:%d -> %d:%d]",
+					c.tc.expected.StartLine, c.tc.expected.StartColumn,
+					c.tc.expected.EndLine, c.tc.expected.EndColumn,
+					output.StartLine, output.StartColumn,
+					output.EndLine, output.EndColumn,
+				))
+			}
+
+			return *shield.AtomResultSuccessCreate()
+		})
+
+		shield.CaseSetDescription(testCase, "validates byte span to line/column conversion")
+		shield.AtomRegisterCase(positionAtom, testCase)
+	}
+
+	shield.UnitRegisterAtom(mainUnit, positionAtom)
 
 	return []shield.Unit{*mainUnit}
 }

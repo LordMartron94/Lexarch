@@ -31,7 +31,13 @@ type PatternCompilerMode = internal.PatternCompilerMode
 
 type ByteSpan = internal.ByteSpan
 
+func LexerByteSpanToPosition(span ByteSpan, source string, tabWidth int) LexingPosition {
+	return internal.SpanToPosition(span, source, tabWidth)
+}
+
 type LexingSnapshot = internal.LexingSessionSnapshot
+
+type LexingPosition = internal.LexPosition
 
 func LexerConfigurationCreate() *LexerConfiguration {
 	return internal.LexerConfigurationCreate()
