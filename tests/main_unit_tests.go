@@ -24,7 +24,7 @@ Targets:
 */
 
 const (
-	TokIdentifier lexarch.TokenKind = iota + 1
+	TokIdentifier lexarch.TokenKind = iota + 2
 	TokInteger
 	TokWhitespace
 	TokOperator
@@ -173,16 +173,88 @@ func GetMainLexerUnits(order int) []shield.Unit {
 	shield.UnitRegisterAtom(mainUnit, errorAtom)
 
 	// ---------------------------------------------------------
+	// Error Recovery (Continue After Invalid Character)
+	// ---------------------------------------------------------
+	type ContinuingLexResult struct {
+		Tokens      []lexarch.Token
+		Errors      []error
+		EOF         bool
+		LexingError error
+	}
+
+	continueAfterErrorRunner := func(input string) ContinuingLexResult {
+		session := lexarch.LexerLexingSessionCreate(sharedLexer, input, 0)
+		out := lexarch.LexingSessionNextResultCreate()
+		result := ContinuingLexResult{}
+
+		// Safety guard against infinite loops in recovery behavior.
+		for i := 0; i < 128; i++ {
+			lexarch.LexingSessionConsume(session, out)
+
+			if out.Token != nil {
+				result.Tokens = append(result.Tokens, *out.Token)
+			}
+			if out.LexingError != nil {
+				result.Errors = append(result.Errors, out.LexingError)
+			}
+			if out.EOF {
+				result.EOF = true
+				break
+			}
+		}
+
+		if !result.EOF {
+			result.LexingError = fmt.Errorf("did not reach EOF while testing continue-after-error behavior")
+		}
+
+		return result
+	}
+
+	continueAfterErrorAtom := shield.AtomCreate(2, "Continue After Invalid Character", continueAfterErrorRunner)
+	continueCase := shield.CaseCreate("continues_after_invalid_character", "let # x", func(output ContinuingLexResult) shield.AtomResult {
+		if output.LexingError != nil {
+			return *shield.AtomResultFailureCreate(output.LexingError.Error())
+		}
+		if !output.EOF {
+			return *shield.AtomResultFailureCreate("expected EOF after recovery flow")
+		}
+		if len(output.Errors) != 1 {
+			return *shield.AtomResultFailureCreate(fmt.Sprintf("expected exactly 1 lexing error, got %d", len(output.Errors)))
+		}
+
+		lexErr, ok := output.Errors[0].(*lexarch.LexerRuntimeError)
+		if !ok {
+			return *shield.AtomResultFailureCreate(fmt.Sprintf("expected LexerRuntimeError, got %T", output.Errors[0]))
+		}
+		span := lexErr.Span()
+		if span.Offset != 4 || span.Length != 1 {
+			return *shield.AtomResultFailureCreate(fmt.Sprintf("expected invalid char span [4:1], got [%d:%d]", span.Offset, span.Length))
+		}
+
+		expected := []TokenSpec{
+			{kind: TokIdentifier, text: "let"},
+			{kind: TokWhitespace, text: " "},
+			{kind: lexarch.TokenKindError, role: lexarch.TokenRoleSentinel, text: "#"},
+			{kind: TokWhitespace, text: " "},
+			{kind: TokIdentifier, text: "x"},
+		}
+		return *assertTokenSpecs(output.Tokens, expected)
+	})
+	shield.CaseSetDescription(continueCase, "validates that lexer reports invalid character and still continues lexing")
+	shield.AtomRegisterCase(continueAfterErrorAtom, continueCase)
+	shield.UnitRegisterAtom(mainUnit, continueAfterErrorAtom)
+
+	// ---------------------------------------------------------
 	// Valid Token Sequences (Lazy)
 	// ---------------------------------------------------------
-	validTokenAtomLazy := shield.AtomCreate(2, "Valid Token Sequences (Lazy)", lexRunner)
+	validTokenAtomLazy := shield.AtomCreate(3, "Valid Token Sequences (Lazy)", lexRunner)
 
 	// Create a second runner specifically for testing the prefill cache
 	prefillLexRunner := func(input string) LexerLexResult {
 		return runLexerSessionToEnd(sharedLexer, input, true)
 	}
 
-	validTokenAtomPrefill := shield.AtomCreate(3, "Valid Token Sequences (Prefilled)", prefillLexRunner)
+	validTokenAtomPrefill := shield.AtomCreate(4, "Valid Token Sequences (Prefilled)", prefillLexRunner)
 
 	validTests := []struct {
 		name  string
@@ -261,7 +333,7 @@ func GetMainLexerUnits(order int) []shield.Unit {
 		return lexarch.LexerByteSpanToPosition(tc.span, tc.source, 4)
 	}
 
-	positionAtom := shield.AtomCreate(4, "Byte Span To Position", positionRunner)
+	positionAtom := shield.AtomCreate(5, "Byte Span To Position", positionRunner)
 
 	positionCases := []struct {
 		name string

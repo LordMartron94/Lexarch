@@ -45,6 +45,15 @@ type LexerConfiguration = internal.LexerConfiguration
 /* PatternCompilerMode selects the NFA construction backend used during lexer compilation. */
 type PatternCompilerMode = internal.PatternCompilerMode
 
+/* TokenKindError is the reserved token kind emitted for invalid lexemes. */
+const TokenKindError TokenKind = internal.ErrorToken
+
+/* TokenKindEOF is the reserved token kind used by consumers as an EOF sentinel kind. */
+const TokenKindEOF TokenKind = internal.EOFToken
+
+/* TokenRoleSentinel is a reserved role used for non-user token outcomes and error tokens. */
+const TokenRoleSentinel TokenRole = internal.SentinelTokenRole
+
 /*
 PATTERN_COMPILE_GLUSHKOV selects the Glushkov construction path.
 

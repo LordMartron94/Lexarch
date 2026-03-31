@@ -19,9 +19,13 @@ import (
 // Sentinel value used to explicitly mark states that are NOT a match
 var nonTerminalOutcome = TokenOutcome{
 	Kind:     ^TokenKind(0),
-	Role:     ^TokenRole(0),
+	Role:     SentinelTokenRole,
 	Priority: -999,
 }
+
+const ErrorToken TokenKind = 0
+const EOFToken TokenKind = 1
+const SentinelTokenRole TokenRole = ^TokenRole(0)
 
 // ----------------------------------------------------------- RESULT
 
@@ -68,6 +72,12 @@ func LexerConfigurationRegisterState(cfg *LexerConfiguration, state LexingState,
 		return item.descriptor == state.descriptor
 	}) {
 		panic(fmt.Errorf("state with descriptor '%s' already registered", state.descriptor))
+	}
+
+	for _, rule := range state.rules {
+		if rule.kind == ErrorToken || rule.kind == EOFToken {
+			panic(fmt.Errorf("a rule inside state '%s' makes use of reserved tokens ERROR or EOF", state.descriptor))
+		}
 	}
 
 	cfg.states = append(cfg.states, state)
@@ -444,7 +454,7 @@ func lexToken(
 
 	bestToken := Token{
 		Kind:   ^TokenKind(0),
-		Role:   ^TokenRole(0),
+		Role:   SentinelTokenRole,
 		FileID: session.fileID,
 		Span: ByteSpan{
 			Offset: absoluteOffset,
@@ -466,28 +476,46 @@ func lexToken(
 			if furthestMatchBytes != -1 {
 				break
 			}
-			result.LexingError = &LexerRuntimeError{
-				msg: fmt.Sprintf("unexpected character '%c'", char),
-				area: ByteSpan{
-					Offset: absoluteOffset + currentRelativeByte,
-					Length: byteLen,
-				},
+			currentSpan := ByteSpan{
+				Offset: absoluteOffset + currentRelativeByte,
+				Length: byteLen,
 			}
-			return false, 0
+
+			result.Token = &Token{
+				Kind:   ErrorToken,
+				Role:   SentinelTokenRole,
+				FileID: session.fileID,
+				Span:   currentSpan,
+			}
+			result.LexingError = &LexerRuntimeError{
+				msg:  fmt.Sprintf("unexpected character '%c'", char),
+				area: currentSpan,
+			}
+			return true, int(currentRelativeByte + byteLen)
 		}
 
 		if autarch.DFAIsDeadState(session.dfa, nextDFAState) {
 			if furthestMatchBytes != -1 {
 				break
 			}
-			result.LexingError = &LexerRuntimeError{
-				msg: "invalid token syntax",
-				area: ByteSpan{
-					Offset: absoluteOffset + currentRelativeByte,
-					Length: byteLen,
-				},
+
+			currentSpan := ByteSpan{
+				Offset: absoluteOffset + currentRelativeByte,
+				Length: byteLen,
 			}
-			return false, 0
+
+			result.Token = &Token{
+				Kind:   ErrorToken,
+				Role:   SentinelTokenRole,
+				FileID: session.fileID,
+				Span:   currentSpan,
+			}
+
+			result.LexingError = &LexerRuntimeError{
+				msg:  "invalid token syntax",
+				area: currentSpan,
+			}
+			return true, int(currentRelativeByte + byteLen)
 		}
 
 		dfaState = nextDFAState
