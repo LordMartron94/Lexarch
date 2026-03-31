@@ -195,8 +195,9 @@ func GetStatefulLexerUnits(order int) []shield.Unit {
 	// ---------------------------------------------------------
 
 	type SnapshotTestCase struct {
-		Input   string
-		Execute func(session *lexarch.LexingSession) LexerLexResult
+		Input       string
+		Execute     func(session *lexarch.LexingSession) LexerLexResult
+		ExpectError bool
 	}
 
 	snapshotRunner := func(tc SnapshotTestCase) LexerLexResult {
@@ -271,12 +272,54 @@ func GetStatefulLexerUnits(order int) []shield.Unit {
 				{restoreToID: "snapshot_1", kind: TokA, text: "A_token"},
 			},
 		},
+		{
+			name: "state_aware_cache_isolation",
+			// Proves that reading a token in STATE_A does not poison the cache
+			// if we backtrack and attempt to read the same offset in STATE_B.
+			caseDef: SnapshotTestCase{
+				Input:       "startA A_token",
+				ExpectError: true, // "A_token" is invalid syntax in STATE_B. We EXPECT a crash.
+				Execute: func(session *lexarch.LexingSession) LexerLexResult {
+					res := LexerLexResult{}
+
+					consumeNext(session, &res) // startA
+					consumeNext(session, &res) // <space>
+
+					// Offset is now 7. Stack is [INITIAL, STATE_A].
+					snap := lexarch.LexingSessionSnapshotCreate(session)
+
+					// Consume in STATE_A to populate the cache at offset 7
+					consumeNext(session, &res) // reads A_token
+
+					// Rewind time
+					lexarch.LexingSessionSnapshotRestore(session, snap)
+
+					// Force a state change from the parser side
+					lexarch.LexingSessionSet(session, "STATE_B")
+
+					// Attempt to consume again.
+					// Buggy cache: Returns TokA.
+					// Fixed cache: Runs STATE_B DFA, fails on 'A', returns error.
+					consumeNext(session, &res)
+
+					return res
+				},
+			},
+			expected: nil, // We don't assert token sequences when expecting an error
+		},
 	}
 
 	for _, tc := range snapshotTests {
 		tc := tc
 
 		testCase := shield.CaseCreate(tc.name, tc.caseDef, func(output LexerLexResult) shield.AtomResult {
+			if tc.caseDef.ExpectError {
+				if output.LexingError == nil {
+					return *shield.AtomResultFailureCreate("expected a lexing error due to state change, but got none (is your cache state-blind?)")
+				}
+				return *shield.AtomResultSuccessCreate()
+			}
+
 			if output.LexingError != nil {
 				return *shield.AtomResultFailureCreate(fmt.Sprintf("unexpected lexing error during snapshot test: %v", output.LexingError))
 			}

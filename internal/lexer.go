@@ -190,7 +190,7 @@ type LexingSession struct {
 	dfa       *autarch.DFA[rune, pattern.AnnotatedOutcome[TokenOutcome]]
 	dfaCursor memstruct.ArrayCursor[uint64]
 
-	lexingContentCache map[uint32]Token // byte offset -> token ; TODO - if this is a perf bottleneck, find a better way to store
+	lexingContentCache map[uint64]Token // byte offset + state -> token ; TODO - if this is a perf bottleneck, find a better way to store
 
 	contentOffsetBytes uint32
 }
@@ -234,7 +234,7 @@ func LexerLexingSessionCreate(lexer *Lexer, content string) *LexingSession {
 		dfa:                dfa,
 		dfaCursor:          cursor,
 		contentOffsetBytes: 0,
-		lexingContentCache: make(map[uint32]Token),
+		lexingContentCache: make(map[uint64]Token),
 	}
 }
 
@@ -385,12 +385,14 @@ func lexingSessionNext(session *LexingSession, out *NextResult) (advanced uint32
 	out.EOF = false
 	out.LexingError = nil
 
+	currentState := session.lexingStateStack[len(session.lexingStateStack)-1]
+
 	if session.contentOffsetBytes >= uint32(len(session.content)) {
 		out.EOF = true
 		return 0
 	}
 
-	if cachedToken, ok := session.lexingContentCache[session.contentOffsetBytes]; ok {
+	if cachedToken, ok := session.lexingContentCache[getCacheKey(session.contentOffsetBytes, currentState)]; ok {
 		out.Token = &cachedToken
 		return cachedToken.Span.Length
 	}
@@ -402,6 +404,11 @@ func lexingSessionNext(session *LexingSession, out *NextResult) (advanced uint32
 	}
 
 	return uint32(tokenAdvanced)
+}
+
+//go:inline
+func getCacheKey(offset uint32, state int) uint64 {
+	return (uint64(state) << 32) | uint64(offset)
 }
 
 func lexToken(
@@ -487,7 +494,9 @@ func lexToken(
 
 	if furthestMatchBytes != -1 {
 		result.Token = &bestToken
-		session.lexingContentCache[absoluteOffset] = bestToken
+
+		currentState := session.lexingStateStack[len(session.lexingStateStack)-1]
+		session.lexingContentCache[getCacheKey(absoluteOffset, currentState)] = bestToken
 
 		if bestStackOperation != nil {
 			applyStackOperation(session, *bestStackOperation)
