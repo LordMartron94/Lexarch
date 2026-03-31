@@ -105,6 +105,11 @@ func LexerConfigurationSetTokenKindFormatter(cfg *LexerConfiguration, formatter 
 
 // ----------------------------------------------------------- LEXER
 
+type stackOperation struct {
+	kind    StackOperationKind
+	payload StackOperationPayload
+}
+
 type Lexer struct {
 	config *LexerConfiguration
 
@@ -114,6 +119,8 @@ type Lexer struct {
 	startState int
 	stateRules []*autarch.DFA[rune, pattern.AnnotatedOutcome[TokenOutcome]]
 	stateMap   map[string]int
+
+	stackOperations []stackOperation
 
 	destroyed bool
 }
@@ -132,9 +139,11 @@ func LexerCreate(cfg *LexerConfiguration) *Lexer {
 		memforge.DynamicLinearAllocatorGrowthTemplateDoubleOrNeededWithMaxPanic(uint64(cfg.maxMainMem)),
 	)
 
+	stackOperations := computeStackOperations(cfg.states)
+
 	for i, state := range cfg.states {
 		stateRules[i] = compileState(
-			state, cfg,
+			state, cfg, stackOperations,
 			func(sizeBytes, alignment uint64) memcore.MarkRaw {
 				return memforge.DynamicLinearAllocatorMallocUnsafe(scratchAllocator, sizeBytes, alignment)
 			},
@@ -149,6 +158,10 @@ func LexerCreate(cfg *LexerConfiguration) *Lexer {
 		}
 	}
 
+	for _, dfa := range stateRules {
+		autarch.DFARefreshCursors(dfa)
+	}
+
 	return &Lexer{
 		config:           cfg,
 		startState:       startState,
@@ -157,6 +170,7 @@ func LexerCreate(cfg *LexerConfiguration) *Lexer {
 		mainAllocator:    mainAllocator,
 		stateRules:       stateRules,
 		stateMap:         stateMap,
+		stackOperations:  stackOperations,
 	}
 }
 
@@ -174,7 +188,7 @@ type LexingSession struct {
 	lexingStateStack []int
 
 	dfa       *autarch.DFA[rune, pattern.AnnotatedOutcome[TokenOutcome]]
-	dfaCursor *memstruct.ArrayCursor[uint64]
+	dfaCursor memstruct.ArrayCursor[uint64]
 
 	lexingContentCache map[uint32]Token // byte offset -> token ; TODO - if this is a perf bottleneck, find a better way to store
 
@@ -192,7 +206,7 @@ func LexerLexingSessionCreate(lexer *Lexer, content string) *LexingSession {
 		content:            content,
 		lexingStateStack:   []int{bottomOfStackMarker, lexer.startState}, // TODO - maybe replace with memstruct dynamic stack if faster than normal slice
 		dfa:                dfa,
-		dfaCursor:          &cursor,
+		dfaCursor:          cursor,
 		contentOffsetBytes: 0,
 		lexingContentCache: make(map[uint32]Token),
 	}
@@ -276,24 +290,54 @@ func LexingSessionPeekUnsafe(session *LexingSession, out *NextResult, n int) {
 	session.contentOffsetBytes = startOffset
 }
 
-func LexingSessionPushState(session *LexingSession, stateDescriptor string) {
-	resolved := session.lexer.stateMap[stateDescriptor]
-	session.lexingStateStack = append(session.lexingStateStack, resolved)
-
-	lexingSessionSetDFAForState(session, resolved)
-}
-
-func LexingSessionPopState(session *LexingSession) {
-	lastIdx := len(session.lexingStateStack) - 1
-	last := session.lexingStateStack[lastIdx]
-	if last != bottomOfStackMarker {
-		session.lexingStateStack = session.lexingStateStack[:lastIdx-1]
+func LexingSessionPushStates(session *LexingSession, states ...string) {
+	if len(states) == 0 {
+		return
 	}
 
-	currentIdx := len(session.lexingStateStack) - 1
-	current := session.lexingStateStack[currentIdx]
+	for _, state := range states {
+		session.lexingStateStack = append(session.lexingStateStack, session.lexer.stateMap[state])
+	}
 
-	lexingSessionSetDFAForState(session, current)
+	lastResolved := session.lexingStateStack[len(session.lexingStateStack)-1]
+	lexingSessionSetDFAForState(session, lastResolved)
+}
+
+func LexingSessionPop(session *LexingSession, amount int) {
+	stack := session.lexingStateStack
+	currentLen := len(stack)
+
+	if amount <= 0 || currentLen <= 1 {
+		return
+	}
+
+	targetIdx := currentLen - amount
+	if targetIdx < 1 {
+		targetIdx = 1
+	}
+
+	newLen := currentLen
+	for i := currentLen - 1; i >= targetIdx; i-- {
+		if stack[i] == bottomOfStackMarker {
+			break
+		}
+		newLen = i
+	}
+
+	if newLen < 1 {
+		newLen = 1
+	}
+
+	session.lexingStateStack = stack[:newLen]
+
+	lexingSessionSetDFAForState(session, session.lexingStateStack[newLen-1])
+}
+
+func LexingSessionSet(session *LexingSession, targets ...string) {
+	// TODO - inline the logic for performance
+
+	LexingSessionPop(session, 1)
+	LexingSessionPushStates(session, targets...)
 }
 
 // ----------------------------------------------------------- PRIVATE HELPERS
@@ -305,7 +349,7 @@ func lexingSessionSetDFAForState(session *LexingSession, state int) {
 	cursor := autarch.DFACursorGet(dfa)
 
 	session.dfa = dfa
-	session.dfaCursor = &cursor
+	session.dfaCursor = cursor
 }
 
 //go:inline
@@ -352,6 +396,7 @@ func lexToken(
 		},
 	}
 
+	var bestStackOperation *int
 	furthestMatchBytes := -1
 	highestPriority := -1
 	currentRelativeByte := uint32(0)
@@ -359,7 +404,7 @@ func lexToken(
 	for _, char := range contentSlice {
 		byteLen := uint32(utf8.RuneLen(char))
 
-		nextDFAState, err := autarch.DFAStep(session.dfa, dfaState, char, *session.dfaCursor)
+		nextDFAState, err := autarch.DFAStep(session.dfa, dfaState, char, session.dfaCursor)
 
 		if err != nil {
 			if furthestMatchBytes != -1 {
@@ -408,6 +453,7 @@ func lexToken(
 			bestToken.Kind = outcome.Value.Kind
 			bestToken.Role = outcome.Value.Role
 			bestToken.Span.Length = uint32(currentLengthBytes)
+			bestStackOperation = outcome.Value.StackOperationID
 		}
 
 		currentRelativeByte += byteLen
@@ -416,13 +462,35 @@ func lexToken(
 	if furthestMatchBytes != -1 {
 		result.Token = &bestToken
 		session.lexingContentCache[absoluteOffset] = bestToken
+
+		if bestStackOperation != nil {
+			applyStackOperation(session, *bestStackOperation)
+		}
+
 		return true, furthestMatchBytes
 	}
 
 	return false, 0
 }
 
-func compileState(state LexingState, cfg *LexerConfiguration, scratchAllocFn, mainAllocFn memarch.AllocationFn) *autarch.DFA[rune, pattern.AnnotatedOutcome[TokenOutcome]] {
+func applyStackOperation(session *LexingSession, operationID int) {
+	resolvedOperation := session.lexer.stackOperations[operationID]
+	switch resolvedOperation.kind {
+	case STACK_PUSH:
+		LexingSessionPushStates(session, resolvedOperation.payload.targets...)
+	case STACK_POP:
+		LexingSessionPop(session, *resolvedOperation.payload.pop)
+	case STACK_SET:
+		LexingSessionSet(session, resolvedOperation.payload.targets...)
+	}
+}
+
+func compileState(
+	state LexingState,
+	cfg *LexerConfiguration,
+	stackOperations []stackOperation,
+	scratchAllocFn, mainAllocFn memarch.AllocationFn,
+) *autarch.DFA[rune, pattern.AnnotatedOutcome[TokenOutcome]] {
 	var compiler pattern.RegulaToNFACompiler[rune, TokenOutcome]
 	switch cfg.patternCompiler {
 	case PATTERN_COMPILE_THOMPSON:
@@ -460,6 +528,15 @@ func compileState(state LexingState, cfg *LexerConfiguration, scratchAllocFn, ma
 	instructions := make([]pattern.PatternCompilationInstruction[rune, TokenOutcome, pattern.RegulaAST[rune]], numRules)
 	for i, rule := range rules {
 		ruleOutcome := TokenOutcome{Kind: rule.kind, Priority: rule.priority, Role: rule.role}
+
+		if rule.stackOpKind != STACK_NONE {
+			stackOpID := findStackID(stackOperations, rule.stackOpKind, *rule.stackPayload)
+			if stackOpID == -1 {
+				panic("engine error: unresolved stack operation ID")
+			}
+			ruleOutcome.StackOperationID = &stackOpID
+		}
+
 		instructions[i] = pattern.PatternCompilationInstruction[rune, TokenOutcome, pattern.RegulaAST[rune]]{
 			Pattern: &rule.pattern,
 			Outcome: ruleOutcome,
@@ -527,4 +604,37 @@ func compileState(state LexingState, cfg *LexerConfiguration, scratchAllocFn, ma
 		})
 
 	return minimizedDFA
+}
+
+func computeStackOperations(states []LexingState) []stackOperation {
+	out := make([]stackOperation, 0)
+
+	for _, state := range states {
+		for _, rule := range state.rules {
+			if rule.stackOpKind == STACK_NONE {
+				continue
+			}
+
+			if targetID := findStackID(out, rule.stackOpKind, *rule.stackPayload); targetID == -1 {
+				out = append(out, stackOperation{
+					kind:    rule.stackOpKind,
+					payload: *rule.stackPayload,
+				})
+			}
+		}
+	}
+
+	return out
+}
+
+func findStackID(stackOperations []stackOperation, kind StackOperationKind, payload StackOperationPayload) int {
+	for i, stackOp := range stackOperations {
+		if stackOp.kind == kind {
+			if stackOp.payload.equal(payload) {
+				return i
+			}
+		}
+	}
+
+	return -1
 }

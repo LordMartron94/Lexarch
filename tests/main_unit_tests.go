@@ -38,7 +38,7 @@ func setupTestLexer() *lexarch.Lexer {
 	factory := pattern.RegulaASTFactoryCreate(obsDomain)
 	templates := pattern.RegulaTemplatesCreate(factory)
 
-	rules := []lexarch.LexingRule{
+	rules := []*lexarch.LexingRule{
 		lexarch.LexingRuleCreate(
 			templates.Whitespace().Plus(),
 			1, // Priority

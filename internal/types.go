@@ -3,6 +3,7 @@ package internal
 import (
 	"autarch/pattern"
 	"fmt"
+	"foundation/extensions"
 )
 
 // ----------------------------------------------------------------- TOKEN
@@ -51,29 +52,99 @@ func (e *LexerValidationError) Error() string {
 
 type LexingState struct {
 	descriptor string
-	rules      []LexingRule
+	rules      []*LexingRule
 }
 
-func LexingStateCreate(descriptor string, rules []LexingRule) LexingState {
+func LexingStateCreate(descriptor string, rules []*LexingRule) LexingState {
 	return LexingState{
 		descriptor: descriptor,
 		rules:      rules,
 	}
 }
 
-type LexingRule struct {
-	pattern  pattern.RegulaAST[rune]
-	priority int
-	kind     TokenKind
-	role     TokenRole
+type StackOperationKind uint8
+
+const (
+	STACK_NONE StackOperationKind = iota + 1
+	STACK_PUSH
+	STACK_POP
+	STACK_SET
+)
+
+type StackOperationPayload struct {
+	targets []string
+	pop     *int
 }
 
-func LexingRuleCreate(pattern pattern.RegulaAST[rune], priority int, kind TokenKind, role TokenRole) LexingRule {
-	return LexingRule{
-		pattern:  pattern,
-		priority: priority,
-		kind:     kind,
-		role:     role,
+func (s StackOperationPayload) equal(other StackOperationPayload) bool {
+	if !extensions.Equal(s.targets, other.targets) {
+		return false
+	}
+
+	if s.pop != nil && other.pop != nil {
+		if *s.pop != *other.pop {
+			return false
+		}
+	} else if s.pop != other.pop {
+		return false
+	}
+
+	return true
+}
+
+type LexingRule struct {
+	pattern      pattern.RegulaAST[rune]
+	priority     int
+	kind         TokenKind
+	role         TokenRole
+	stackOpKind  StackOperationKind
+	stackPayload *StackOperationPayload
+}
+
+func LexingRuleCreate(pattern pattern.RegulaAST[rune], priority int, kind TokenKind, role TokenRole) *LexingRule {
+	return &LexingRule{
+		pattern:      pattern,
+		priority:     priority,
+		kind:         kind,
+		role:         role,
+		stackOpKind:  STACK_NONE,
+		stackPayload: nil,
+	}
+}
+
+func LexingRuleSetStackPush(rule *LexingRule, targets ...string) {
+	if rule.stackPayload != nil {
+		panic("rule already has stack op attached")
+	}
+
+	rule.stackOpKind = STACK_PUSH
+	rule.stackPayload = &StackOperationPayload{
+		targets: targets,
+		pop:     nil,
+	}
+}
+
+func LexingRuleSetStackPop(rule *LexingRule, amount int) {
+	if rule.stackPayload != nil {
+		panic("rule already has stack op attached")
+	}
+
+	rule.stackOpKind = STACK_POP
+	rule.stackPayload = &StackOperationPayload{
+		targets: nil,
+		pop:     &amount,
+	}
+}
+
+func LexingRuleSetStackSet(rule *LexingRule, targets ...string) {
+	if rule.stackPayload != nil {
+		panic("rule already has stack op attached")
+	}
+
+	rule.stackOpKind = STACK_SET
+	rule.stackPayload = &StackOperationPayload{
+		targets: targets,
+		pop:     nil,
 	}
 }
 
@@ -83,6 +154,8 @@ type TokenOutcome struct {
 	Kind     TokenKind
 	Role     TokenRole
 	Priority int
+
+	StackOperationID *int
 }
 
 // ----------------------------------------------------------------- GENERIC

@@ -55,12 +55,24 @@ func LexerConfigurationSetTokenKindFormatter(cfg *LexerConfiguration, formatter 
 	internal.LexerConfigurationSetTokenKindFormatter(cfg, formatter)
 }
 
-func LexingStateCreate(descriptor string, rules []LexingRule) LexingState {
+func LexingStateCreate(descriptor string, rules []*LexingRule) LexingState {
 	return internal.LexingStateCreate(descriptor, rules)
 }
 
-func LexingRuleCreate(pattern pattern.RegulaAST[rune], priority int, kind TokenKind, role TokenRole) LexingRule {
+func LexingRuleCreate(pattern pattern.RegulaAST[rune], priority int, kind TokenKind, role TokenRole) *LexingRule {
 	return internal.LexingRuleCreate(pattern, priority, kind, role)
+}
+
+func LexingRuleSetStackPush(rule *LexingRule, targets ...string) {
+	internal.LexingRuleSetStackPush(rule, targets...)
+}
+
+func LexingRuleSetStackPop(rule *LexingRule, amount int) {
+	internal.LexingRuleSetStackPop(rule, amount)
+}
+
+func LexingRuleSetStackSet(rule *LexingRule, targets ...string) {
+	internal.LexingRuleSetStackSet(rule, targets...)
 }
 
 func LexerCreate(configuration *LexerConfiguration) *Lexer {
@@ -99,10 +111,14 @@ func LexingSessionPeekUnsafe(session *LexingSession, out *LexingNextResult, n in
 	internal.LexingSessionPeekUnsafe(session, out, n)
 }
 
-func LexingSessionPushState(session *LexingSession, stateDescriptor string) {
-	internal.LexingSessionPushState(session, stateDescriptor)
+func LexingSessionPushStates(session *LexingSession, states ...string) {
+	internal.LexingSessionPushStates(session, states...)
 }
 
-func LexingSessionPopState(session *LexingSession) {
-	internal.LexingSessionPopState(session)
+func LexingSessionPop(session *LexingSession, amount int) {
+	internal.LexingSessionPop(session, amount)
+}
+
+func LexingSessionSet(session *LexingSession, targets ...string) {
+	internal.LexingSessionSet(session, targets...)
 }
