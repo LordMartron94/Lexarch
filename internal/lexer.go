@@ -515,7 +515,7 @@ func lexToken(
 			return failWithUnexpectedChar(session, result, absoluteOffset, uint32(offset), char)
 		}
 
-		if autarch.DFAIsDeadState(session.dfa, nextDFAState) {
+		if nextDFAState == autarch.DeadState {
 			if furthestMatchBytes != -1 {
 				break
 			}
