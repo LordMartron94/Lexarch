@@ -501,10 +501,7 @@ func lexToken(
 	currentStateID int,
 	result *NextResult,
 ) (ok bool, advancedBytes int) {
-	session.tempToken.Kind = SentinelToken
-	session.tempToken.Role = SentinelTokenRole
-	session.tempToken.Span.Offset = absoluteOffset
-	session.tempToken.Span.Length = 0
+	session.tempToken.Span.Offset = absoluteOffset // We only need to reset the offset, the rest is done automatically.
 
 	dfaState := autarch.StartStateID
 	bestStackOperationID := -1
