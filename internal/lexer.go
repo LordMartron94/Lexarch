@@ -26,6 +26,7 @@ var nonTerminalOutcome = TokenOutcome{
 const ErrorToken TokenKind = 0
 const EOFToken TokenKind = 1
 const SentinelTokenRole TokenRole = ^TokenRole(0)
+const SentinelToken TokenKind = ^TokenKind(0)
 
 // ----------------------------------------------------------- RESULT
 
@@ -208,6 +209,8 @@ type LexingSession struct {
 
 	contentOffsetBytes uint32
 	fileID             uint16
+
+	tempToken *Token
 }
 
 type LexingSessionSnapshot struct {
@@ -261,6 +264,15 @@ func LexerLexingSessionCreate(lexer *Lexer, content string, fileID uint16) *Lexi
 		contentOffsetBytes: 0,
 		lexingContentCache: make(map[uint64]Token),
 		fileID:             fileID,
+		tempToken: &Token{
+			Kind:   SentinelToken,
+			Role:   SentinelTokenRole,
+			FileID: fileID,
+			Span: ByteSpan{
+				Offset: 0,
+				Length: 0,
+			},
+		},
 	}
 }
 
@@ -457,15 +469,11 @@ func lexToken(
 ) (ok bool, advancedBytes int) {
 	dfaState := autarch.StartStateID
 
-	bestToken := Token{
-		Kind:   ^TokenKind(0),
-		Role:   SentinelTokenRole,
-		FileID: session.fileID,
-		Span: ByteSpan{
-			Offset: absoluteOffset,
-			Length: 0,
-		},
-	}
+	// Reset token buffer
+	session.tempToken.Kind = SentinelToken
+	session.tempToken.Role = SentinelTokenRole
+	session.tempToken.Span.Offset = absoluteOffset
+	session.tempToken.Span.Length = 0
 
 	var bestStackOperation *int
 	furthestMatchBytes := -1
@@ -539,9 +547,9 @@ func lexToken(
 			furthestMatchBytes = currentLengthBytes
 			highestPriority = outcome.Value.Priority
 
-			bestToken.Kind = outcome.Value.Kind
-			bestToken.Role = outcome.Value.Role
-			bestToken.Span.Length = uint32(currentLengthBytes)
+			session.tempToken.Kind = outcome.Value.Kind
+			session.tempToken.Role = outcome.Value.Role
+			session.tempToken.Span.Length = uint32(currentLengthBytes)
 			bestStackOperation = outcome.Value.StackOperationID
 		}
 
@@ -549,10 +557,10 @@ func lexToken(
 	}
 
 	if furthestMatchBytes != -1 {
-		result.Token = &bestToken
+		result.Token = session.tempToken
 
 		currentState := session.lexingStateStack[len(session.lexingStateStack)-1]
-		session.lexingContentCache[getCacheKey(absoluteOffset, currentState.id)] = bestToken
+		session.lexingContentCache[getCacheKey(absoluteOffset, currentState.id)] = *session.tempToken
 
 		if bestStackOperation != nil {
 			applyStackOperation(session, *bestStackOperation)
