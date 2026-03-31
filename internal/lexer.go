@@ -195,6 +195,32 @@ type LexingSession struct {
 	contentOffsetBytes uint32
 }
 
+type LexingSessionSnapshot struct {
+	contentOffsetBytes uint32
+	lexingStateStack   []int
+}
+
+func LexingSessionSnapshotCreate(session *LexingSession) LexingSessionSnapshot {
+	cp := make([]int, len(session.lexingStateStack))
+	copy(cp, session.lexingStateStack)
+
+	return LexingSessionSnapshot{
+		contentOffsetBytes: session.contentOffsetBytes,
+		lexingStateStack:   cp,
+	}
+}
+
+func LexingSessionSnapshotRestore(session *LexingSession, snapshot LexingSessionSnapshot) {
+	cp := make([]int, len(snapshot.lexingStateStack))
+	copy(cp, snapshot.lexingStateStack)
+
+	session.contentOffsetBytes = snapshot.contentOffsetBytes
+	session.lexingStateStack = cp
+
+	restoredTop := session.lexingStateStack[len(session.lexingStateStack)-1]
+	lexingSessionSetDFAForState(session, restoredTop)
+}
+
 const bottomOfStackMarker = ^int(0)
 
 func LexerLexingSessionCreate(lexer *Lexer, content string) *LexingSession {
@@ -269,25 +295,25 @@ func LexingSessionPeek(session *LexingSession, out *NextResult, n int) {
 		return
 	}
 
-	startOffset := session.contentOffsetBytes
+	snap := LexingSessionSnapshotCreate(session)
 
 	for i := 0; i < n; i++ {
 		advanced := lexingSessionNext(session, out)
 		session.contentOffsetBytes += uint32(advanced)
 	}
 
-	session.contentOffsetBytes = startOffset
+	LexingSessionSnapshotRestore(session, snap)
 }
 
 func LexingSessionPeekUnsafe(session *LexingSession, out *NextResult, n int) {
-	startOffset := session.contentOffsetBytes
+	snap := LexingSessionSnapshotCreate(session)
 
 	for i := 0; i < n; i++ {
 		advanced := lexingSessionNext(session, out)
 		session.contentOffsetBytes += uint32(advanced)
 	}
 
-	session.contentOffsetBytes = startOffset
+	LexingSessionSnapshotRestore(session, snap)
 }
 
 func LexingSessionPushStates(session *LexingSession, states ...string) {

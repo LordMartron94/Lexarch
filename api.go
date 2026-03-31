@@ -31,6 +31,8 @@ type PatternCompilerMode = internal.PatternCompilerMode
 
 type ByteSpan = internal.ByteSpan
 
+type LexingSnapshot = internal.LexingSessionSnapshot
+
 func LexerConfigurationCreate() *LexerConfiguration {
 	return internal.LexerConfigurationCreate()
 }
@@ -121,4 +123,12 @@ func LexingSessionPop(session *LexingSession, amount int) {
 
 func LexingSessionSet(session *LexingSession, targets ...string) {
 	internal.LexingSessionSet(session, targets...)
+}
+
+func LexingSessionSnapshotCreate(session *LexingSession) LexingSnapshot {
+	return internal.LexingSessionSnapshotCreate(session)
+}
+
+func LexingSessionSnapshotRestore(session *LexingSession, snapshot LexingSnapshot) {
+	internal.LexingSessionSnapshotRestore(session, snapshot)
 }

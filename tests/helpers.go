@@ -20,9 +20,11 @@ func parseMarkedInput(marked string) (clean string, offset uint32) {
 }
 
 type TokenSpec struct {
-	kind lexarch.TokenKind
-	role lexarch.TokenRole
-	text string
+	id          string
+	restoreToID string
+	kind        lexarch.TokenKind
+	role        lexarch.TokenRole
+	text        string
 }
 
 func assertTokenSpecs(actual []lexarch.Token, specs []TokenSpec) *shield.AtomResult {
@@ -33,9 +35,19 @@ func assertTokenSpecs(actual []lexarch.Token, specs []TokenSpec) *shield.AtomRes
 	}
 
 	currentOffset := uint32(0)
+	markers := make(map[string]uint32)
+
 	for i, spec := range specs {
+		if spec.restoreToID != "" {
+			offset, ok := markers[spec.restoreToID]
+			if !ok {
+				return shield.AtomResultFailureCreate(fmt.Sprintf("test setup error: unknown restore ID '%s'", spec.restoreToID))
+			}
+			currentOffset = offset
+		}
+
 		act := actual[i]
-		expectedLength := uint32(len(spec.text)) // len() natively counts bytes in Go
+		expectedLength := uint32(len(spec.text))
 
 		if act.Kind != spec.kind {
 			return shield.AtomResultFailureCreate(fmt.Sprintf(
@@ -55,6 +67,10 @@ func assertTokenSpecs(actual []lexarch.Token, specs []TokenSpec) *shield.AtomRes
 		}
 
 		currentOffset += expectedLength
+
+		if spec.id != "" {
+			markers[spec.id] = currentOffset
+		}
 	}
 
 	return shield.AtomResultSuccessCreate()

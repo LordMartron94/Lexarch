@@ -190,5 +190,104 @@ func GetStatefulLexerUnits(order int) []shield.Unit {
 
 	shield.UnitRegisterAtom(statefulUnit, stateAtom)
 
+	// ---------------------------------------------------------
+	// SNAPSHOT & RESTORE OPERATIONS
+	// ---------------------------------------------------------
+
+	type SnapshotTestCase struct {
+		Input   string
+		Execute func(session *lexarch.LexingSession) LexerLexResult
+	}
+
+	snapshotRunner := func(tc SnapshotTestCase) LexerLexResult {
+		session := lexarch.LexerLexingSessionCreate(statefulLexer, tc.Input)
+		return tc.Execute(session)
+	}
+
+	snapshotAtom := shield.AtomCreate(1, "Snapshot and Restore", snapshotRunner)
+
+	// Helper to consume cleanly in the imperative tests
+	consumeNext := func(session *lexarch.LexingSession, res *LexerLexResult) {
+		out := lexarch.LexingSessionNextResultCreate()
+		lexarch.LexingSessionConsume(session, out)
+		if out.LexingError != nil {
+			res.LexingError = out.LexingError
+		} else if out.Token != nil {
+			res.Tokens = append(res.Tokens, *out.Token)
+		} else if out.EOF {
+			res.EOF = true
+		}
+	}
+
+	snapshotTests := []struct {
+		name     string
+		caseDef  SnapshotTestCase
+		expected []TokenSpec
+	}{
+		{
+			name: "restore_rewinds_offset_and_state",
+			// Proves that if the lexer transitions from STATE_A to STATE_B,
+			// a restore violently rips the lexer back to STATE_A and the old offset.
+			caseDef: SnapshotTestCase{
+				Input: "startA A_token gotoB B_token",
+				Execute: func(session *lexarch.LexingSession) LexerLexResult {
+					res := LexerLexResult{}
+
+					// 1. Enter STATE_A
+					consumeNext(session, &res) // startA
+					consumeNext(session, &res) // <space>
+
+					// 2. CREATE SNAPSHOT (We are at offset 7, Stack: [INITIAL, STATE_A])
+					snap := lexarch.LexingSessionSnapshotCreate(session)
+
+					// 3. Move forward and transition to STATE_B
+					consumeNext(session, &res) // A_token
+					consumeNext(session, &res) // <space>
+					consumeNext(session, &res) // gotoB (Lexer pushes STATE_B)
+					consumeNext(session, &res) // <space>
+					consumeNext(session, &res) // B_token
+
+					// 4. RESTORE SNAPSHOT
+					lexarch.LexingSessionSnapshotRestore(session, snap)
+
+					// 5. Consume again. If the snapshot worked, we should re-read A_token
+					// and it should NOT throw a LexingError (meaning we are back in STATE_A).
+					consumeNext(session, &res) // A_token (second time)
+
+					return res
+				},
+			},
+			expected: []TokenSpec{
+				{kind: TokPushA, text: "startA"},
+
+				{id: "snapshot_1", kind: TokWhitespace, text: " "},
+
+				{kind: TokA, text: "A_token"},
+				{kind: TokWhitespace, text: " "},
+				{kind: TokSetB, text: "gotoB"},
+				{kind: TokWhitespace, text: " "},
+				{kind: TokB, text: "B_token"},
+
+				{restoreToID: "snapshot_1", kind: TokA, text: "A_token"},
+			},
+		},
+	}
+
+	for _, tc := range snapshotTests {
+		tc := tc
+
+		testCase := shield.CaseCreate(tc.name, tc.caseDef, func(output LexerLexResult) shield.AtomResult {
+			if output.LexingError != nil {
+				return *shield.AtomResultFailureCreate(fmt.Sprintf("unexpected lexing error during snapshot test: %v", output.LexingError))
+			}
+			return *assertTokenSpecs(output.Tokens, tc.expected)
+		})
+
+		shield.CaseSetDescription(testCase, "validates deep mutability reversal of LexingSession")
+		shield.AtomRegisterCase(snapshotAtom, testCase)
+	}
+
+	shield.UnitRegisterAtom(statefulUnit, snapshotAtom)
+
 	return []shield.Unit{*statefulUnit}
 }
