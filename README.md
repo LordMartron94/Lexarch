@@ -129,3 +129,47 @@ Interpretation guidance:
   disproportionately between adjacent sizes under the same mode/hardware.
 - Regression triage should compare the same suite mode and machine class first, then inspect
   callgrind profile output for hot-path shifts.
+
+## Current Benchmark Snapshot
+
+Baseline is `Corpus=small` with median `2.03 us/op`.
+
+### Time/Op Summary
+
+- `Corpus=small`: median `2.03 us`, mean `7.76 us`, `tokens/op=63`, `chars/op=87`
+- `Corpus=medium`: median `25.08 us`, mean `34.68 us`, `tokens/op=875`, `chars/op=1.38k`
+- `Corpus=large`: median `48.08 us`, mean `52.70 us`, `tokens/op=1.75k`, `chars/op=2.90k`
+
+Absolute `time/op` rises strongly with larger files, which is expected because each operation
+processes far more input and emits far more tokens.
+
+### Throughput Summary
+
+- `throughput.chars_per_sec`
+  - small: `42.8M`
+  - medium: `55.1M`
+  - large: `60.4M`
+- `throughput.tokens_per_sec`
+  - small: `31.0M`
+  - medium: `34.9M`
+  - large: `36.4M`
+
+Throughput does not collapse as corpus size grows; it improves in this run. That indicates
+the lexer hot path remains stable under larger workloads and that fixed per-iteration overheads
+are amortized better on medium/large corpora.
+
+### Allocation/GC Summary
+
+- allocs/op stays around `1.00-1.02`
+- `gc.count` remains `0` and `gc/op` remains `0.000`
+
+This indicates the benchmark is largely allocation-stable and not dominated by GC in these runs.
+
+### Variability Notes
+
+- `small` shows high CV (`156%`) and long-tail outliers (`p95/p99`) due to very short operation time.
+- `medium` and `large` have lower relative variance (`59%`, `22%` CV respectively), so scaling comparisons are more reliable there.
+
+Interpretation rule for regressions: prioritize changes in `throughput.chars_per_sec` and
+`throughput.tokens_per_sec`, then use `time/op` as a secondary metric after normalizing for
+`chars/op` and `tokens/op`.
