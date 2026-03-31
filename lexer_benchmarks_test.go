@@ -208,7 +208,7 @@ func BenchmarkLexerSuite(b *testing.B) {
 }
 
 func TestProfile_LexerSuite(t *testing.T) {
-	content, err := lexerBenchLoadCorpus("lexer_medium.txt")
+	content, err := lexerBenchLoadCorpus("lexer_large.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
