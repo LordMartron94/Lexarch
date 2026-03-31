@@ -109,3 +109,23 @@ Coordinates are 1-indexed.
 - Reuse a `LexingNextResult` object in loops to avoid unnecessary allocations.
 - If a parser API attempts illegal cross-owner stack mutation, the engine panics by design.
 - Use snapshots for speculative flows; restore resets session position and stack state.
+
+## Benchmark Scaling Criteria
+
+The lexer benchmark suite publishes corpus-size variants (`small`, `medium`, `large`) with
+the same metric keys so Anvil can compare trends directly.
+
+Primary metrics:
+
+- `chars/op`
+- `tokens/op`
+- `throughput.chars_per_sec`
+- `throughput.tokens_per_sec`
+
+Interpretation guidance:
+
+- `tokens/op` must remain stable for a fixed corpus (deterministic output check).
+- `chars/sec` and `tokens/sec` may decline with larger corpora, but should not collapse
+  disproportionately between adjacent sizes under the same mode/hardware.
+- Regression triage should compare the same suite mode and machine class first, then inspect
+  callgrind profile output for hot-path shifts.
