@@ -501,108 +501,125 @@ func lexToken(
 	currentStateID int,
 	result *NextResult,
 ) (ok bool, advancedBytes int) {
-	dfaState := autarch.StartStateID
-
-	// Reset token buffer
 	session.tempToken.Kind = SentinelToken
 	session.tempToken.Role = SentinelTokenRole
 	session.tempToken.Span.Offset = absoluteOffset
 	session.tempToken.Span.Length = 0
 
-	var bestStackOperation *int
+	dfaState := autarch.StartStateID
+	bestStackOperationID := -1
 	furthestMatchBytes := -1
 	highestPriority := -1
-	currentRelativeByte := uint32(0)
 
-	for _, char := range contentSlice {
-		byteLen := uint32(utf8.RuneLen(char))
-
+	for offset, char := range contentSlice {
 		nextDFAState, err := autarch.DFAStep(session.dfa, dfaState, char, session.dfaCursor)
 
 		if err != nil {
 			if furthestMatchBytes != -1 {
 				break
 			}
-			currentSpan := ByteSpan{
-				Offset: absoluteOffset + currentRelativeByte,
-				Length: byteLen,
-			}
-
-			result.Token = &Token{
-				Kind:   ErrorToken,
-				Role:   SentinelTokenRole,
-				FileID: session.fileID,
-				Span:   currentSpan,
-			}
-			result.LexingError = &LexerRuntimeError{
-				msg:  fmt.Sprintf("unexpected character '%c'", char),
-				area: currentSpan,
-			}
-			return true, int(currentRelativeByte + byteLen)
+			return failWithUnexpectedChar(session, result, absoluteOffset, uint32(offset), char)
 		}
 
 		if autarch.DFAIsDeadState(session.dfa, nextDFAState) {
 			if furthestMatchBytes != -1 {
 				break
 			}
-
-			currentSpan := ByteSpan{
-				Offset: absoluteOffset + currentRelativeByte,
-				Length: byteLen,
-			}
-
-			result.Token = &Token{
-				Kind:   ErrorToken,
-				Role:   SentinelTokenRole,
-				FileID: session.fileID,
-				Span:   currentSpan,
-			}
-
-			result.LexingError = &LexerRuntimeError{
-				msg:  "invalid token syntax",
-				area: currentSpan,
-			}
-			return true, int(currentRelativeByte + byteLen)
+			return failWithInvalidSyntax(session, result, absoluteOffset, uint32(offset), char)
 		}
 
 		dfaState = nextDFAState
 
-		if outcome, isTerminal := autarch.DFAStateOutcome(session.dfa, dfaState); isTerminal && outcome.Value != nonTerminalOutcome {
-			currentLengthBytes := int(currentRelativeByte + byteLen)
+		// Fast-path ASCII byte length calculation
+		charLen := 1
+		if char >= utf8.RuneSelf {
+			charLen = utf8.RuneLen(char)
+		}
+		currentLengthBytes := offset + charLen
 
-			if currentLengthBytes > furthestMatchBytes {
-				goto done
-			} else if currentLengthBytes == furthestMatchBytes {
-				if outcome.Value.Priority > highestPriority {
-					goto done
+		outcome, isTerminal := autarch.DFAStateOutcome(session.dfa, dfaState)
+		if isTerminal && outcome.Value != nonTerminalOutcome {
+			isFurther := currentLengthBytes > furthestMatchBytes
+			isEqualButHigherPriority := currentLengthBytes == furthestMatchBytes && outcome.Value.Priority > highestPriority
+
+			if isFurther || isEqualButHigherPriority {
+				furthestMatchBytes = currentLengthBytes
+				highestPriority = outcome.Value.Priority
+
+				session.tempToken.Kind = outcome.Value.Kind
+				session.tempToken.Role = outcome.Value.Role
+				session.tempToken.Span.Length = uint32(currentLengthBytes)
+
+				if outcome.Value.StackOperationID != nil {
+					bestStackOperationID = *outcome.Value.StackOperationID
+				} else {
+					bestStackOperationID = -1
 				}
 			}
-		done:
-			furthestMatchBytes = currentLengthBytes
-			highestPriority = outcome.Value.Priority
-
-			session.tempToken.Kind = outcome.Value.Kind
-			session.tempToken.Role = outcome.Value.Role
-			session.tempToken.Span.Length = uint32(currentLengthBytes)
-			bestStackOperation = outcome.Value.StackOperationID
 		}
-
-		currentRelativeByte += byteLen
 	}
 
 	if furthestMatchBytes != -1 {
 		result.Token = session.tempToken
-
 		TokenCachePut(session.lexingContentCache, getCacheKey(absoluteOffset, currentStateID), session.tempToken)
 
-		if bestStackOperation != nil {
-			applyStackOperation(session, *bestStackOperation)
+		if bestStackOperationID != -1 {
+			applyStackOperation(session, bestStackOperationID)
 		}
-
 		return true, furthestMatchBytes
 	}
 
 	return false, 0
+}
+
+//go:noinline
+func failWithUnexpectedChar(session *LexingSession, result *NextResult, absOffset, relOffset uint32, char rune) (bool, int) {
+	charLen := 1
+	if char >= utf8.RuneSelf {
+		charLen = utf8.RuneLen(char)
+	}
+
+	currentSpan := ByteSpan{
+		Offset: absOffset + relOffset,
+		Length: uint32(charLen),
+	}
+
+	result.Token = &Token{
+		Kind:   ErrorToken,
+		Role:   SentinelTokenRole,
+		FileID: session.fileID,
+		Span:   currentSpan,
+	}
+	result.LexingError = &LexerRuntimeError{
+		msg:  fmt.Sprintf("unexpected character '%c'", char),
+		area: currentSpan,
+	}
+	return true, int(relOffset) + charLen
+}
+
+//go:noinline
+func failWithInvalidSyntax(session *LexingSession, result *NextResult, absOffset, relOffset uint32, char rune) (bool, int) {
+	charLen := 1
+	if char >= utf8.RuneSelf {
+		charLen = utf8.RuneLen(char)
+	}
+
+	currentSpan := ByteSpan{
+		Offset: absOffset + relOffset,
+		Length: uint32(charLen),
+	}
+
+	result.Token = &Token{
+		Kind:   ErrorToken,
+		Role:   SentinelTokenRole,
+		FileID: session.fileID,
+		Span:   currentSpan,
+	}
+	result.LexingError = &LexerRuntimeError{
+		msg:  "invalid token syntax",
+		area: currentSpan,
+	}
+	return true, int(relOffset) + charLen
 }
 
 func applyStackOperation(session *LexingSession, operationID int) {
