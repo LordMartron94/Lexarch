@@ -202,10 +202,9 @@ type LexingSession struct {
 
 	lexingStateStack []stackFrame
 
-	dfa       *autarch.DFA[rune, pattern.AnnotatedOutcome[TokenOutcome]]
-	dfaCursor memstruct.ArrayCursor[uint64]
-
-	lexingContentCache map[uint64]Token // byte offset + state -> token ; TODO - if this is a perf bottleneck, find a better way to store
+	dfa                *autarch.DFA[rune, pattern.AnnotatedOutcome[TokenOutcome]]
+	dfaCursor          memstruct.ArrayCursor[uint64]
+	lexingContentCache *TokenCache
 
 	contentOffsetBytes uint32
 	fileID             uint16
@@ -234,7 +233,6 @@ func LexingSessionSnapshotRestore(session *LexingSession, snapshot LexingSession
 
 	session.contentOffsetBytes = snapshot.contentOffsetBytes
 	session.lexingStateStack = cp
-	session.lexingContentCache = make(map[uint64]Token) // TODO - find a way to optimize this and not nuke the entire cache
 
 	restoredTop := session.lexingStateStack[len(session.lexingStateStack)-1]
 	lexingSessionSetDFAForState(session, restoredTop.id)
@@ -262,7 +260,7 @@ func LexerLexingSessionCreate(lexer *Lexer, content string, fileID uint16) *Lexi
 		dfa:                dfa,
 		dfaCursor:          cursor,
 		contentOffsetBytes: 0,
-		lexingContentCache: make(map[uint64]Token),
+		lexingContentCache: TokenCacheCreate(),
 		fileID:             fileID,
 		tempToken: &Token{
 			Kind:   SentinelToken,
@@ -287,7 +285,7 @@ func LexerLexingSessionReset(lexer *Lexer, session *LexingSession, content strin
 	session.contentOffsetBytes = 0
 	session.fileID = fileID
 
-	clear(session.lexingContentCache)
+	TokenCacheClear(session.lexingContentCache)
 
 	session.lexingStateStack = session.lexingStateStack[:0]
 	session.lexingStateStack = append(session.lexingStateStack,
@@ -471,8 +469,8 @@ func lexingSessionNext(session *LexingSession, out *NextResult) (advanced uint32
 		return 0
 	}
 
-	if cachedToken, ok := session.lexingContentCache[getCacheKey(session.contentOffsetBytes, currentState.id)]; ok {
-		out.Token = &cachedToken
+	if cachedToken, ok := TokenCacheGet(session.lexingContentCache, getCacheKey(session.contentOffsetBytes, currentState.id)); ok {
+		out.Token = cachedToken
 		return cachedToken.Span.Length
 	}
 
@@ -589,7 +587,7 @@ func lexToken(
 		result.Token = session.tempToken
 
 		currentState := session.lexingStateStack[len(session.lexingStateStack)-1]
-		session.lexingContentCache[getCacheKey(absoluteOffset, currentState.id)] = *session.tempToken
+		TokenCachePut(session.lexingContentCache, getCacheKey(absoluteOffset, currentState.id), session.tempToken)
 
 		if bestStackOperation != nil {
 			applyStackOperation(session, *bestStackOperation)
