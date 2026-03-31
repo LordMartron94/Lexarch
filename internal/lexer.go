@@ -31,7 +31,6 @@ const SentinelTokenRole TokenRole = ^TokenRole(0)
 
 type NextResult struct {
 	Token       *Token
-	EOF         bool
 	LexingError error
 }
 
@@ -268,7 +267,6 @@ func LexerLexingSessionCreate(lexer *Lexer, content string, fileID uint16) *Lexi
 func LexingSessionNextResultCreate() *NextResult {
 	return &NextResult{
 		Token:       nil,
-		EOF:         false,
 		LexingError: nil,
 	}
 }
@@ -282,7 +280,7 @@ func LexingSessionPrefillCache(session *LexingSession) error {
 		for {
 			LexingSessionConsumeUnsafe(session, out)
 
-			if out.EOF {
+			if out.Token.Kind == EOFToken {
 				break
 			}
 
@@ -415,13 +413,20 @@ func lexingSessionSetDFAForState(session *LexingSession, state int) {
 //go:nosplit
 func lexingSessionNext(session *LexingSession, out *NextResult) (advanced uint32) {
 	out.Token = nil
-	out.EOF = false
 	out.LexingError = nil
 
 	currentState := session.lexingStateStack[len(session.lexingStateStack)-1]
 
 	if session.contentOffsetBytes >= uint32(len(session.content)) {
-		out.EOF = true
+		out.Token = &Token{
+			Kind:   EOFToken,
+			Role:   SentinelTokenRole,
+			FileID: session.fileID,
+			Span: ByteSpan{
+				Offset: 0,
+				Length: 0,
+			},
+		}
 		return 0
 	}
 

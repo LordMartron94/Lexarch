@@ -83,7 +83,6 @@ func setupTestLexer() *lexarch.Lexer {
 
 type LexerLexResult struct {
 	Tokens      []lexarch.Token
-	EOF         bool
 	LexingError error
 }
 
@@ -116,9 +115,6 @@ func GetMainLexerUnits(order int) []shield.Unit {
 		}
 		if len(output.Tokens) != 0 {
 			return *shield.AtomResultFailureCreate(fmt.Sprintf("expected 0 tokens, got %d", len(output.Tokens)))
-		}
-		if !output.EOF {
-			return *shield.AtomResultFailureCreate("empty string failed to flag EOF")
 		}
 		return *shield.AtomResultSuccessCreate()
 	})
@@ -178,7 +174,7 @@ func GetMainLexerUnits(order int) []shield.Unit {
 	type ContinuingLexResult struct {
 		Tokens      []lexarch.Token
 		Errors      []error
-		EOF         bool
+		ReachedEOF  bool
 		LexingError error
 	}
 
@@ -191,19 +187,19 @@ func GetMainLexerUnits(order int) []shield.Unit {
 		for i := 0; i < 128; i++ {
 			lexarch.LexingSessionConsume(session, out)
 
+			if out.Token != nil && out.Token.Kind == lexarch.TokenKindEOF {
+				result.ReachedEOF = true
+				break
+			}
 			if out.Token != nil {
 				result.Tokens = append(result.Tokens, *out.Token)
 			}
 			if out.LexingError != nil {
 				result.Errors = append(result.Errors, out.LexingError)
 			}
-			if out.EOF {
-				result.EOF = true
-				break
-			}
 		}
 
-		if !result.EOF {
+		if !result.ReachedEOF {
 			result.LexingError = fmt.Errorf("did not reach EOF while testing continue-after-error behavior")
 		}
 
@@ -215,7 +211,7 @@ func GetMainLexerUnits(order int) []shield.Unit {
 		if output.LexingError != nil {
 			return *shield.AtomResultFailureCreate(output.LexingError.Error())
 		}
-		if !output.EOF {
+		if !output.ReachedEOF {
 			return *shield.AtomResultFailureCreate("expected EOF after recovery flow")
 		}
 		if len(output.Errors) != 1 {

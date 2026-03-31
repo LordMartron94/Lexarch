@@ -194,9 +194,10 @@ func GetStatefulLexerUnits(order int) []shield.Unit {
 		if out.LexingError != nil {
 			res.LexingError = out.LexingError
 		} else if out.Token != nil {
+			if out.Token.Kind == lexarch.TokenKindEOF {
+				return
+			}
 			res.Tokens = append(res.Tokens, *out.Token)
-		} else if out.EOF {
-			res.EOF = true
 		}
 	}
 

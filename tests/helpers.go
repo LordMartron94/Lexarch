@@ -48,8 +48,7 @@ func runLexerSessionToEnd(lexer *lexarch.Lexer, input string, prefill bool) Lexe
 			result.LexingError = out.LexingError
 			break
 		}
-		if out.EOF {
-			result.EOF = true
+		if out.Token != nil && out.Token.Kind == lexarch.TokenKindEOF {
 			break
 		}
 		if out.Token != nil {
