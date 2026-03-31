@@ -325,38 +325,6 @@ func GetStatefulLexerUnits(order int) []shield.Unit {
 		expected []TokenSpec
 	}{
 		{
-			name: "parser_push_lexer_pop",
-			// The Parser forces the Lexer into STATE_A.
-			// The Lexer eventually reads 'pop' and uses its own rule to return to INITIAL.
-			caseDef: SnapshotTestCase{
-				Input: "A_token pop init_token",
-				Execute: func(session *lexarch.LexingSession) LexerLexResult {
-					res := LexerLexResult{}
-
-					// Parser injects state
-					lexarch.LexingSessionPushStates(session, "STATE_A")
-
-					consumeNext(session, &res) // A_token
-					consumeNext(session, &res) // <space>
-					consumeNext(session, &res) // pop (Lexer executes STACK_POP internally)
-					consumeNext(session, &res) // <space>
-
-					// If the DFA cursor synced correctly on the internal pop,
-					// this will successfully read the INITIAL token.
-					consumeNext(session, &res) // init_token
-
-					return res
-				},
-			},
-			expected: []TokenSpec{
-				{kind: TokA, text: "A_token"},
-				{kind: TokWhitespace, text: " "},
-				{kind: TokPop, text: "pop"},
-				{kind: TokWhitespace, text: " "},
-				{kind: TokInit, text: "init_token"},
-			},
-		},
-		{
 			name: "deep_interleaved_stack",
 			// Parser pushes A -> Lexer pushes B -> Lexer pops B -> Parser pops A
 			caseDef: SnapshotTestCase{

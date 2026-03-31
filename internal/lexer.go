@@ -361,8 +361,8 @@ func LexingSessionPop(session *LexingSession, lexerRequested bool, amount int) {
 	for i := currentLen - 1; i >= targetIdx; i-- {
 		frame := stack[i]
 
-		if frame.ownedByLexer && !lexerRequested {
-			panic("engine-error: parser cannot pop when we are in a lexer owned state")
+		if frame.ownedByLexer != lexerRequested { // valids are: (ownedByLexer AND lexerRequested) OR (!ownedByLexer AND !lexerRequested)
+			panic("engine-error: pop must be executed by owner")
 		}
 
 		if frame.id == bottomOfStackMarker {
