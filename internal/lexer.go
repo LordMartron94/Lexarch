@@ -531,8 +531,8 @@ func lexToken(
 		}
 		currentLengthBytes := offset + charLen
 
-		outcome, isTerminal := autarch.DFAStateOutcome(session.dfa, dfaState)
-		if isTerminal && outcome.Value != nonTerminalOutcome {
+		outcome := autarch.DFAStateOutcomeUnsafe(session.dfa, dfaState)
+		if outcome.Value != nonTerminalOutcome {
 			isFurther := currentLengthBytes > furthestMatchBytes
 			isEqualButHigherPriority := currentLengthBytes == furthestMatchBytes && outcome.Value.Priority > highestPriority
 
