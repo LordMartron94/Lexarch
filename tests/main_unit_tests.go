@@ -414,5 +414,99 @@ func GetMainLexerUnits(order int) []shield.Unit {
 
 	shield.UnitRegisterAtom(mainUnit, positionAtom)
 
+	// ---------------------------------------------------------
+	// SESSION RESET REUSE
+	// ---------------------------------------------------------
+	type SessionResetResult struct {
+		BeforeReset []lexarch.Token
+		AfterReset  []lexarch.Token
+		LexingError error
+	}
+
+	resetRunner := func(_ string) SessionResetResult {
+		session := lexarch.LexerLexingSessionCreate(sharedLexer, "let x = 10;", 0)
+		out := lexarch.LexingSessionNextResultCreate()
+		result := SessionResetResult{}
+
+		consumeAll := func(target *[]lexarch.Token) error {
+			for i := 0; i < 128; i++ {
+				lexarch.LexingSessionConsume(session, out)
+				if out.LexingError != nil {
+					return out.LexingError
+				}
+				if out.Token == nil {
+					return fmt.Errorf("expected token, got nil")
+				}
+				if out.Token.Kind == lexarch.TokenKindEOF {
+					return nil
+				}
+				*target = append(*target, *out.Token)
+			}
+			return fmt.Errorf("consume guard tripped while reading token stream")
+		}
+
+		if err := consumeAll(&result.BeforeReset); err != nil {
+			result.LexingError = err
+			return result
+		}
+
+		lexarch.LexerLexingSessionReset(sharedLexer, session, "a+b", 0)
+
+		if err := consumeAll(&result.AfterReset); err != nil {
+			result.LexingError = err
+			return result
+		}
+
+		return result
+	}
+
+	resetAtom := shield.AtomCreate(6, "Session Reset Reuse", resetRunner)
+	resetCase := shield.CaseCreate("reuses_session_after_reset", "", func(output SessionResetResult) shield.AtomResult {
+		if output.LexingError != nil {
+			return *shield.AtomResultFailureCreate(output.LexingError.Error())
+		}
+
+		beforeExpected := []TokenSpec{
+			{kind: TokIdentifier, text: "let"},
+			{kind: TokWhitespace, text: " "},
+			{kind: TokIdentifier, text: "x"},
+			{kind: TokWhitespace, text: " "},
+			{kind: TokOperator, text: "="},
+			{kind: TokWhitespace, text: " "},
+			{kind: TokInteger, text: "10"},
+			{kind: TokPunctuation, text: ";"},
+		}
+		afterExpected := []TokenSpec{
+			{kind: TokIdentifier, text: "a"},
+			{kind: TokOperator, text: "+"},
+			{kind: TokIdentifier, text: "b"},
+		}
+
+		if len(output.BeforeReset) != len(beforeExpected) {
+			return *shield.AtomResultFailureCreate(fmt.Sprintf("before reset token count mismatch: expected %d, got %d", len(beforeExpected), len(output.BeforeReset)))
+		}
+		for i, spec := range beforeExpected {
+			tok := output.BeforeReset[i]
+			if tok.Kind != spec.kind {
+				return *shield.AtomResultFailureCreate(fmt.Sprintf("before reset token[%d] kind mismatch: expected %d, got %d", i, spec.kind, tok.Kind))
+			}
+		}
+
+		if len(output.AfterReset) != len(afterExpected) {
+			return *shield.AtomResultFailureCreate(fmt.Sprintf("after reset token count mismatch: expected %d, got %d", len(afterExpected), len(output.AfterReset)))
+		}
+		for i, spec := range afterExpected {
+			tok := output.AfterReset[i]
+			if tok.Kind != spec.kind {
+				return *shield.AtomResultFailureCreate(fmt.Sprintf("after reset token[%d] kind mismatch: expected %d, got %d", i, spec.kind, tok.Kind))
+			}
+		}
+
+		return *shield.AtomResultSuccessCreate()
+	})
+	shield.CaseSetDescription(resetCase, "validates session can be reset and reused for a new input stream")
+	shield.AtomRegisterCase(resetAtom, resetCase)
+	shield.UnitRegisterAtom(mainUnit, resetAtom)
+
 	return []shield.Unit{*mainUnit}
 }

@@ -208,6 +208,16 @@ func LexerLexingSessionCreate(lexer *Lexer, content string, fileID uint16) *Lexi
 }
 
 /*
+LexerLexingSessionReset reuses an existing session with new content and file id.
+
+Reset clears cursor/cache/state-stack back to start-state baseline while preserving the
+session allocation itself, enabling allocation-free session reuse across runs.
+*/
+func LexerLexingSessionReset(lexer *Lexer, session *LexingSession, content string, fileID uint16) {
+	internal.LexerLexingSessionReset(lexer, session, content, fileID)
+}
+
+/*
 LexingSessionNextResultCreate allocates an empty reusable result container.
 
 Callers should reuse this object in hot loops to avoid repeated allocations.

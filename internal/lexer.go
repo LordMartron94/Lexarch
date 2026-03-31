@@ -276,6 +276,35 @@ func LexerLexingSessionCreate(lexer *Lexer, content string, fileID uint16) *Lexi
 	}
 }
 
+func LexerLexingSessionReset(lexer *Lexer, session *LexingSession, content string, fileID uint16) {
+	dfa := lexer.stateRules[lexer.startState]
+	cursor := autarch.DFACursorGet(dfa)
+
+	session.lexer = lexer
+	session.content = content
+	session.dfa = dfa
+	session.dfaCursor = cursor
+	session.contentOffsetBytes = 0
+	session.fileID = fileID
+
+	clear(session.lexingContentCache)
+
+	session.lexingStateStack = session.lexingStateStack[:0]
+	session.lexingStateStack = append(session.lexingStateStack,
+		stackFrame{
+			id:           bottomOfStackMarker,
+			ownedByLexer: true,
+		},
+		stackFrame{
+			id:           lexer.startState,
+			ownedByLexer: true,
+		},
+	)
+
+	// No need to reset the temp token explicitly
+	session.tempToken.FileID = fileID
+}
+
 func LexingSessionNextResultCreate() *NextResult {
 	return &NextResult{
 		Token:       nil,

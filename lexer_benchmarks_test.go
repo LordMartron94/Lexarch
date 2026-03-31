@@ -23,6 +23,8 @@ const (
 
 type lexerBenchData struct {
 	lexer      *Lexer
+	session    *LexingSession
+	out        *LexingNextResult
 	content    string
 	charCount  uint64
 	tokenCount uint64
@@ -89,12 +91,11 @@ func lexerBenchLoadCorpus(fileName string) (string, error) {
 	return string(raw), nil
 }
 
-func lexerBenchLexOnce(lexer *Lexer, content string) (tokens uint64, err error) {
+func lexerBenchLexOnce(lexer *Lexer, session *LexingSession, out *LexingNextResult, content string) (tokens uint64, err error) {
 	benchmarking.BenchmarkingCallgrindInstrRegionMaybeBegin()
 	defer benchmarking.BenchmarkingCallgrindInstrRegionMaybeEnd()
 
-	session := LexerLexingSessionCreate(lexer, content, 0)
-	out := LexingSessionNextResultCreate()
+	LexerLexingSessionReset(lexer, session, content, 0)
 
 	for {
 		LexingSessionConsume(session, out)
@@ -139,7 +140,9 @@ func benchmarkLexerCorpus(b *testing.B, corpusName, fileName string) {
 				}
 
 				lexer := lexerBenchSetupLexer()
-				tokenCount, err := lexerBenchLexOnce(lexer, content)
+				session := LexerLexingSessionCreate(lexer, content, 0)
+				out := LexingSessionNextResultCreate()
+				tokenCount, err := lexerBenchLexOnce(lexer, session, out, content)
 				if err != nil {
 					LexerDestroy(lexer)
 					b.Fatal(err)
@@ -147,17 +150,19 @@ func benchmarkLexerCorpus(b *testing.B, corpusName, fileName string) {
 
 				return &lexerBenchData{
 					lexer:      lexer,
+					session:    session,
+					out:        out,
 					content:    content,
 					charCount:  uint64(len([]rune(content))),
 					tokenCount: tokenCount,
 				}
 			},
 			func(data *lexerBenchData) {
-				_, _ = lexerBenchLexOnce(data.lexer, data.content)
+				_, _ = lexerBenchLexOnce(data.lexer, data.session, data.out, data.content)
 			},
 			func(data *lexerBenchData, b *testing.B) {
 				for i := 0; i < b.N; i++ {
-					tokenCount, err := lexerBenchLexOnce(data.lexer, data.content)
+					tokenCount, err := lexerBenchLexOnce(data.lexer, data.session, data.out, data.content)
 					if err != nil {
 						panic(err)
 					}
@@ -210,6 +215,8 @@ func TestProfile_LexerSuite(t *testing.T) {
 
 	lexer := lexerBenchSetupLexer()
 	defer LexerDestroy(lexer)
+	session := LexerLexingSessionCreate(lexer, content, 0)
+	out := LexingSessionNextResultCreate()
 
 	warm := 0
 	if s := os.Getenv(benchmarking.EnvAnvilProfileWarmupIterations); s != "" {
@@ -223,12 +230,12 @@ func TestProfile_LexerSuite(t *testing.T) {
 	}
 
 	for i := 0; i < warm; i++ {
-		if _, lexErr := lexerBenchLexOnce(lexer, content); lexErr != nil {
+		if _, lexErr := lexerBenchLexOnce(lexer, session, out, content); lexErr != nil {
 			t.Fatal(lexErr)
 		}
 	}
 	for i := 0; i < work; i++ {
-		if _, lexErr := lexerBenchLexOnce(lexer, content); lexErr != nil {
+		if _, lexErr := lexerBenchLexOnce(lexer, session, out, content); lexErr != nil {
 			t.Fatal(lexErr)
 		}
 	}
