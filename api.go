@@ -114,15 +114,15 @@ func LexingSessionPeekUnsafe(session *LexingSession, out *LexingNextResult, n in
 }
 
 func LexingSessionPushStates(session *LexingSession, states ...string) {
-	internal.LexingSessionPushStates(session, states...)
+	internal.LexingSessionPushStates(session, false, states...)
 }
 
 func LexingSessionPop(session *LexingSession, amount int) {
-	internal.LexingSessionPop(session, amount)
+	internal.LexingSessionPop(session, false, amount)
 }
 
 func LexingSessionSet(session *LexingSession, targets ...string) {
-	internal.LexingSessionSet(session, targets...)
+	internal.LexingSessionSet(session, false, targets...)
 }
 
 func LexingSessionSnapshotCreate(session *LexingSession) LexingSnapshot {

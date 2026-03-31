@@ -274,38 +274,34 @@ func GetStatefulLexerUnits(order int) []shield.Unit {
 		},
 		{
 			name: "state_aware_cache_isolation",
-			// Proves that reading a token in STATE_A does not poison the cache
-			// if we backtrack and attempt to read the same offset in STATE_B.
 			caseDef: SnapshotTestCase{
-				Input:       "startA A_token",
-				ExpectError: true, // "A_token" is invalid syntax in STATE_B. We EXPECT a crash.
+				Input:       "A_token", // Just the raw token
+				ExpectError: true,
 				Execute: func(session *lexarch.LexingSession) LexerLexResult {
 					res := LexerLexResult{}
 
-					consumeNext(session, &res) // startA
-					consumeNext(session, &res) // <space>
+					// 1. Parser pushes STATE_A (Parser-owned, legal to mutate)
+					lexarch.LexingSessionPushStates(session, "STATE_A")
 
-					// Offset is now 7. Stack is [INITIAL, STATE_A].
+					// 2. Snapshot (Stack: [INITIAL, STATE_A])
 					snap := lexarch.LexingSessionSnapshotCreate(session)
 
-					// Consume in STATE_A to populate the cache at offset 7
-					consumeNext(session, &res) // reads A_token
+					// 3. Consume in STATE_A to poison cache at offset 0
+					consumeNext(session, &res)
 
-					// Rewind time
+					// 4. Rewind time
 					lexarch.LexingSessionSnapshotRestore(session, snap)
 
-					// Force a state change from the parser side
+					// 5. Parser Sets STATE_B (Legal, because STATE_A was parser-owned)
 					lexarch.LexingSessionSet(session, "STATE_B")
 
-					// Attempt to consume again.
-					// Buggy cache: Returns TokA.
-					// Fixed cache: Runs STATE_B DFA, fails on 'A', returns error.
+					// 6. Attempt to consume. Safe Cache = error. Blind Cache = TokA.
 					consumeNext(session, &res)
 
 					return res
 				},
 			},
-			expected: nil, // We don't assert token sequences when expecting an error
+			expected: nil,
 		},
 	}
 
@@ -331,6 +327,256 @@ func GetStatefulLexerUnits(order int) []shield.Unit {
 	}
 
 	shield.UnitRegisterAtom(statefulUnit, snapshotAtom)
+
+	// ---------------------------------------------------------
+	// MIXED STACK MUTATIONS (PARSER + LEXER)
+	// ---------------------------------------------------------
+
+	mixedMutationsRunner := func(tc SnapshotTestCase) LexerLexResult {
+		session := lexarch.LexerLexingSessionCreate(statefulLexer, tc.Input)
+		return tc.Execute(session)
+	}
+
+	mixedMutationsAtom := shield.AtomCreate(2, "Mixed Stack Mutations", mixedMutationsRunner)
+
+	mixedTests := []struct {
+		name     string
+		caseDef  SnapshotTestCase
+		expected []TokenSpec
+	}{
+		{
+			name: "parser_push_lexer_pop",
+			// The Parser forces the Lexer into STATE_A.
+			// The Lexer eventually reads 'pop' and uses its own rule to return to INITIAL.
+			caseDef: SnapshotTestCase{
+				Input: "A_token pop init_token",
+				Execute: func(session *lexarch.LexingSession) LexerLexResult {
+					res := LexerLexResult{}
+
+					// Parser injects state
+					lexarch.LexingSessionPushStates(session, "STATE_A")
+
+					consumeNext(session, &res) // A_token
+					consumeNext(session, &res) // <space>
+					consumeNext(session, &res) // pop (Lexer executes STACK_POP internally)
+					consumeNext(session, &res) // <space>
+
+					// If the DFA cursor synced correctly on the internal pop,
+					// this will successfully read the INITIAL token.
+					consumeNext(session, &res) // init_token
+
+					return res
+				},
+			},
+			expected: []TokenSpec{
+				{kind: TokA, text: "A_token"},
+				{kind: TokWhitespace, text: " "},
+				{kind: TokPop, text: "pop"},
+				{kind: TokWhitespace, text: " "},
+				{kind: TokInit, text: "init_token"},
+			},
+		},
+		{
+			name: "deep_interleaved_stack",
+			// Parser pushes A -> Lexer pushes B -> Lexer pops B -> Parser pops A
+			caseDef: SnapshotTestCase{
+				Input: "startB B_token pop A_token",
+				Execute: func(session *lexarch.LexingSession) LexerLexResult {
+					res := LexerLexResult{}
+
+					// Stack: [INITIAL, STATE_A]
+					lexarch.LexingSessionPushStates(session, "STATE_A")
+
+					consumeNext(session, &res) // startB (Lexer pushes STATE_B)
+					consumeNext(session, &res) // <space>
+
+					// Stack: [INITIAL, STATE_A, STATE_B]
+					consumeNext(session, &res) // B_token
+					consumeNext(session, &res) // <space>
+
+					// Lexer pops STATE_B. Stack should be back to [INITIAL, STATE_A]
+					consumeNext(session, &res) // pop
+					consumeNext(session, &res) // <space>
+
+					// Must resolve using STATE_A's DFA
+					consumeNext(session, &res) // A_token
+
+					// Parser pops STATE_A. Stack should be back to [INITIAL]
+					lexarch.LexingSessionPop(session, 1)
+
+					// Signal EOF
+					consumeNext(session, &res)
+
+					return res
+				},
+			},
+			expected: []TokenSpec{
+				{kind: TokPushB, text: "startB"},
+				{kind: TokWhitespace, text: " "},
+				{kind: TokB, text: "B_token"},
+				{kind: TokWhitespace, text: " "},
+				{kind: TokPop, text: "pop"},
+				{kind: TokWhitespace, text: " "},
+				{kind: TokA, text: "A_token"},
+			},
+		},
+	}
+
+	for _, tc := range mixedTests {
+		tc := tc
+
+		testCase := shield.CaseCreate(tc.name, tc.caseDef, func(output LexerLexResult) shield.AtomResult {
+			if output.LexingError != nil {
+				return *shield.AtomResultFailureCreate(fmt.Sprintf("unexpected lexing error during mixed mutations: %v", output.LexingError))
+			}
+			return *assertTokenSpecs(output.Tokens, tc.expected)
+		})
+
+		shield.CaseSetDescription(testCase, "validates interplay between API state mutations and Rule state mutations")
+		shield.AtomRegisterCase(mixedMutationsAtom, testCase)
+	}
+
+	shield.UnitRegisterAtom(statefulUnit, mixedMutationsAtom)
+
+	// ---------------------------------------------------------
+	// LEXICAL LOCK GUARDS (PROTECTION AGAINST PARSER)
+	// ---------------------------------------------------------
+
+	lockGuardsRunner := func(tc SnapshotTestCase) LexerLexResult {
+		session := lexarch.LexerLexingSessionCreate(statefulLexer, tc.Input)
+		return tc.Execute(session)
+	}
+
+	lockGuardsAtom := shield.AtomCreate(3, "Lexical Lock Guards", lockGuardsRunner)
+
+	// Helper to assert that illegal parser mutations cause an engine panic
+	expectPanic := func(action func()) (panicked bool) {
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = true
+			}
+		}()
+		action()
+		return false
+	}
+
+	lockTests := []struct {
+		name     string
+		caseDef  SnapshotTestCase
+		expected []TokenSpec
+	}{
+		{
+			name: "parser_cannot_pop_lexer_state",
+			caseDef: SnapshotTestCase{
+				Input:       "startA",
+				ExpectError: true, // We WANT it to fail validation via panic
+				Execute: func(session *lexarch.LexingSession) LexerLexResult {
+					res := LexerLexResult{}
+					consumeNext(session, &res)
+
+					panicked := expectPanic(func() {
+						lexarch.LexingSessionPop(session, 1)
+					})
+
+					if !panicked {
+						// It didn't panic. Force a normal error so the outer assertion catches the failure.
+						res.LexingError = fmt.Errorf("LexingSessionPop failed to panic")
+					} else {
+						// It panicked successfully! Force a LexingError so ExpectError evaluates to TRUE.
+						res.LexingError = fmt.Errorf("EXPECTED_PANIC")
+					}
+					return res
+				},
+			},
+			expected: nil, // We don't care about sequence matching here
+		},
+		{
+			name: "parser_cannot_set_over_lexer_state",
+			caseDef: SnapshotTestCase{
+				Input:       "startA",
+				ExpectError: true, // We WANT it to fail validation via panic
+				Execute: func(session *lexarch.LexingSession) LexerLexResult {
+					res := LexerLexResult{}
+					consumeNext(session, &res)
+
+					panicked := expectPanic(func() {
+						lexarch.LexingSessionSet(session, "STATE_B")
+					})
+
+					if !panicked {
+						res.LexingError = fmt.Errorf("LexingSessionSet failed to panic")
+					} else {
+						res.LexingError = fmt.Errorf("EXPECTED_PANIC")
+					}
+					return res
+				},
+			},
+			expected: nil,
+		},
+		{
+			name: "snapshot_restore_bypasses_lock",
+			// Proves that while Pop and Set are blocked, Restore is allowed to
+			// wipe lexer-owned states because it is a time-travel rewind operation.
+			caseDef: SnapshotTestCase{
+				Input: " startA", // Added a leading space to anchor the snapshot
+				Execute: func(session *lexarch.LexingSession) LexerLexResult {
+					res := LexerLexResult{}
+
+					consumeNext(session, &res) // Consume leading space
+
+					// Take snapshot BEFORE the lexer pushes its state (Stack: [INITIAL])
+					snap := lexarch.LexingSessionSnapshotCreate(session)
+
+					consumeNext(session, &res) // startA (Lexer pushes STATE_A)
+
+					// Parser abandons the lookahead and restores.
+					// This MUST NOT panic, even though it destroys STATE_A.
+					panicked := expectPanic(func() {
+						lexarch.LexingSessionSnapshotRestore(session, snap)
+					})
+
+					if panicked {
+						res.LexingError = fmt.Errorf("LexingSessionSnapshotRestore panicked unexpectedly")
+						return res
+					}
+
+					// We are safely back at offset 1, so the next read is startA again
+					consumeNext(session, &res) // startA
+
+					return res
+				},
+			},
+			expected: []TokenSpec{
+				{id: "anchor", kind: TokWhitespace, text: " "},
+				{kind: TokPushA, text: "startA"},
+				// --- RESTORE ---
+				// Rewind the test runner's expected offset back to the anchor
+				{restoreToID: "anchor", kind: TokPushA, text: "startA"},
+			},
+		},
+	}
+
+	for _, tc := range lockTests {
+		tc := tc
+
+		testCase := shield.CaseCreate(tc.name, tc.caseDef, func(output LexerLexResult) shield.AtomResult {
+			if tc.caseDef.ExpectError {
+				if output.LexingError == nil {
+					return *shield.AtomResultFailureCreate("Expected panic/error, but execution succeeded")
+				}
+				return *shield.AtomResultSuccessCreate()
+			}
+			if output.LexingError != nil {
+				return *shield.AtomResultFailureCreate(output.LexingError.Error())
+			}
+			return *assertTokenSpecs(output.Tokens, tc.expected)
+		})
+
+		shield.CaseSetDescription(testCase, "validates API boundaries protecting lexer-owned stack frames")
+		shield.AtomRegisterCase(lockGuardsAtom, testCase)
+	}
+
+	shield.UnitRegisterAtom(statefulUnit, lockGuardsAtom)
 
 	return []shield.Unit{*statefulUnit}
 }

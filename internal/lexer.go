@@ -180,12 +180,17 @@ func LexerDestroy(lexer *Lexer) {
 	lexer.destroyed = true
 }
 
+type stackFrame struct {
+	id           int
+	ownedByLexer bool
+}
+
 type LexingSession struct {
 	lexer *Lexer
 
 	content string
 
-	lexingStateStack []int
+	lexingStateStack []stackFrame
 
 	dfa       *autarch.DFA[rune, pattern.AnnotatedOutcome[TokenOutcome]]
 	dfaCursor memstruct.ArrayCursor[uint64]
@@ -197,11 +202,11 @@ type LexingSession struct {
 
 type LexingSessionSnapshot struct {
 	contentOffsetBytes uint32
-	lexingStateStack   []int
+	lexingStateStack   []stackFrame
 }
 
 func LexingSessionSnapshotCreate(session *LexingSession) LexingSessionSnapshot {
-	cp := make([]int, len(session.lexingStateStack))
+	cp := make([]stackFrame, len(session.lexingStateStack))
 	copy(cp, session.lexingStateStack)
 
 	return LexingSessionSnapshot{
@@ -211,14 +216,15 @@ func LexingSessionSnapshotCreate(session *LexingSession) LexingSessionSnapshot {
 }
 
 func LexingSessionSnapshotRestore(session *LexingSession, snapshot LexingSessionSnapshot) {
-	cp := make([]int, len(snapshot.lexingStateStack))
+	cp := make([]stackFrame, len(snapshot.lexingStateStack))
 	copy(cp, snapshot.lexingStateStack)
 
 	session.contentOffsetBytes = snapshot.contentOffsetBytes
 	session.lexingStateStack = cp
+	session.lexingContentCache = make(map[uint64]Token) // TODO - find a way to optimize this and not nuke the entire cache
 
 	restoredTop := session.lexingStateStack[len(session.lexingStateStack)-1]
-	lexingSessionSetDFAForState(session, restoredTop)
+	lexingSessionSetDFAForState(session, restoredTop.id)
 }
 
 const bottomOfStackMarker = ^int(0)
@@ -228,9 +234,18 @@ func LexerLexingSessionCreate(lexer *Lexer, content string) *LexingSession {
 	cursor := autarch.DFACursorGet(dfa)
 
 	return &LexingSession{
-		lexer:              lexer,
-		content:            content,
-		lexingStateStack:   []int{bottomOfStackMarker, lexer.startState}, // TODO - maybe replace with memstruct dynamic stack if faster than normal slice
+		lexer:   lexer,
+		content: content,
+		lexingStateStack: []stackFrame{
+			{
+				id:           bottomOfStackMarker,
+				ownedByLexer: true,
+			},
+			{
+				id:           lexer.startState,
+				ownedByLexer: true,
+			},
+		}, // TODO - maybe replace with memstruct dynamic stack if faster than normal slice
 		dfa:                dfa,
 		dfaCursor:          cursor,
 		contentOffsetBytes: 0,
@@ -316,20 +331,20 @@ func LexingSessionPeekUnsafe(session *LexingSession, out *NextResult, n int) {
 	LexingSessionSnapshotRestore(session, snap)
 }
 
-func LexingSessionPushStates(session *LexingSession, states ...string) {
+func LexingSessionPushStates(session *LexingSession, lexerOwned bool, states ...string) {
 	if len(states) == 0 {
 		return
 	}
 
 	for _, state := range states {
-		session.lexingStateStack = append(session.lexingStateStack, session.lexer.stateMap[state])
+		session.lexingStateStack = append(session.lexingStateStack, stackFrame{id: session.lexer.stateMap[state], ownedByLexer: lexerOwned})
 	}
 
 	lastResolved := session.lexingStateStack[len(session.lexingStateStack)-1]
-	lexingSessionSetDFAForState(session, lastResolved)
+	lexingSessionSetDFAForState(session, lastResolved.id)
 }
 
-func LexingSessionPop(session *LexingSession, amount int) {
+func LexingSessionPop(session *LexingSession, lexerRequested bool, amount int) {
 	stack := session.lexingStateStack
 	currentLen := len(stack)
 
@@ -344,7 +359,13 @@ func LexingSessionPop(session *LexingSession, amount int) {
 
 	newLen := currentLen
 	for i := currentLen - 1; i >= targetIdx; i-- {
-		if stack[i] == bottomOfStackMarker {
+		frame := stack[i]
+
+		if frame.ownedByLexer && !lexerRequested {
+			panic("engine-error: parser cannot pop when we are in a lexer owned state")
+		}
+
+		if frame.id == bottomOfStackMarker {
 			break
 		}
 		newLen = i
@@ -356,14 +377,14 @@ func LexingSessionPop(session *LexingSession, amount int) {
 
 	session.lexingStateStack = stack[:newLen]
 
-	lexingSessionSetDFAForState(session, session.lexingStateStack[newLen-1])
+	lexingSessionSetDFAForState(session, session.lexingStateStack[newLen-1].id)
 }
 
-func LexingSessionSet(session *LexingSession, targets ...string) {
+func LexingSessionSet(session *LexingSession, ownedByLexer bool, targets ...string) {
 	// TODO - inline the logic for performance
 
-	LexingSessionPop(session, 1)
-	LexingSessionPushStates(session, targets...)
+	LexingSessionPop(session, ownedByLexer, 1)
+	LexingSessionPushStates(session, ownedByLexer, targets...)
 }
 
 // ----------------------------------------------------------- PRIVATE HELPERS
@@ -392,7 +413,7 @@ func lexingSessionNext(session *LexingSession, out *NextResult) (advanced uint32
 		return 0
 	}
 
-	if cachedToken, ok := session.lexingContentCache[getCacheKey(session.contentOffsetBytes, currentState)]; ok {
+	if cachedToken, ok := session.lexingContentCache[getCacheKey(session.contentOffsetBytes, currentState.id)]; ok {
 		out.Token = &cachedToken
 		return cachedToken.Span.Length
 	}
@@ -496,7 +517,7 @@ func lexToken(
 		result.Token = &bestToken
 
 		currentState := session.lexingStateStack[len(session.lexingStateStack)-1]
-		session.lexingContentCache[getCacheKey(absoluteOffset, currentState)] = bestToken
+		session.lexingContentCache[getCacheKey(absoluteOffset, currentState.id)] = bestToken
 
 		if bestStackOperation != nil {
 			applyStackOperation(session, *bestStackOperation)
@@ -512,11 +533,11 @@ func applyStackOperation(session *LexingSession, operationID int) {
 	resolvedOperation := session.lexer.stackOperations[operationID]
 	switch resolvedOperation.kind {
 	case STACK_PUSH:
-		LexingSessionPushStates(session, resolvedOperation.payload.targets...)
+		LexingSessionPushStates(session, true, resolvedOperation.payload.targets...)
 	case STACK_POP:
-		LexingSessionPop(session, *resolvedOperation.payload.pop)
+		LexingSessionPop(session, true, *resolvedOperation.payload.pop)
 	case STACK_SET:
-		LexingSessionSet(session, resolvedOperation.payload.targets...)
+		LexingSessionSet(session, true, resolvedOperation.payload.targets...)
 	}
 }
 
