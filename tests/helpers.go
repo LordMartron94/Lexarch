@@ -30,7 +30,7 @@ func tokenSpecsToInput(specs []TokenSpec) string {
 }
 
 func runLexerSessionToEnd(lexer *lexarch.Lexer, input string, prefill bool) LexerLexResult {
-	session := lexarch.LexerLexingSessionCreate(lexer, input)
+	session := lexarch.LexerLexingSessionCreate(lexer, input, 0)
 
 	if prefill {
 		err := lexarch.LexingSessionPrefillCache(session)

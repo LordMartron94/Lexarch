@@ -181,7 +181,7 @@ func GetStatefulLexerUnits(order int) []shield.Unit {
 	}
 
 	snapshotRunner := func(tc SnapshotTestCase) LexerLexResult {
-		session := lexarch.LexerLexingSessionCreate(statefulLexer, tc.Input)
+		session := lexarch.LexerLexingSessionCreate(statefulLexer, tc.Input, 0)
 		return tc.Execute(session)
 	}
 
@@ -313,7 +313,7 @@ func GetStatefulLexerUnits(order int) []shield.Unit {
 	// ---------------------------------------------------------
 
 	mixedMutationsRunner := func(tc SnapshotTestCase) LexerLexResult {
-		session := lexarch.LexerLexingSessionCreate(statefulLexer, tc.Input)
+		session := lexarch.LexerLexingSessionCreate(statefulLexer, tc.Input, 0)
 		return tc.Execute(session)
 	}
 
@@ -391,7 +391,7 @@ func GetStatefulLexerUnits(order int) []shield.Unit {
 	// ---------------------------------------------------------
 
 	lockGuardsRunner := func(tc SnapshotTestCase) LexerLexResult {
-		session := lexarch.LexerLexingSessionCreate(statefulLexer, tc.Input)
+		session := lexarch.LexerLexingSessionCreate(statefulLexer, tc.Input, 0)
 		return tc.Execute(session)
 	}
 

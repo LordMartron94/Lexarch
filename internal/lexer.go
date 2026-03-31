@@ -198,6 +198,7 @@ type LexingSession struct {
 	lexingContentCache map[uint64]Token // byte offset + state -> token ; TODO - if this is a perf bottleneck, find a better way to store
 
 	contentOffsetBytes uint32
+	fileID             uint16
 }
 
 type LexingSessionSnapshot struct {
@@ -229,7 +230,7 @@ func LexingSessionSnapshotRestore(session *LexingSession, snapshot LexingSession
 
 const bottomOfStackMarker = ^int(0)
 
-func LexerLexingSessionCreate(lexer *Lexer, content string) *LexingSession {
+func LexerLexingSessionCreate(lexer *Lexer, content string, fileID uint16) *LexingSession {
 	dfa := lexer.stateRules[lexer.startState]
 	cursor := autarch.DFACursorGet(dfa)
 
@@ -250,6 +251,7 @@ func LexerLexingSessionCreate(lexer *Lexer, content string) *LexingSession {
 		dfaCursor:          cursor,
 		contentOffsetBytes: 0,
 		lexingContentCache: make(map[uint64]Token),
+		fileID:             fileID,
 	}
 }
 
@@ -443,7 +445,7 @@ func lexToken(
 	bestToken := Token{
 		Kind:   ^TokenKind(0),
 		Role:   ^TokenRole(0),
-		FileID: 0, // TODO - implement file IDs
+		FileID: session.fileID,
 		Span: ByteSpan{
 			Offset: absoluteOffset,
 			Length: 0,

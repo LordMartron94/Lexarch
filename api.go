@@ -91,8 +91,8 @@ func LexerDestroy(lexer *Lexer) {
 	internal.LexerDestroy(lexer)
 }
 
-func LexerLexingSessionCreate(lexer *Lexer, content string) *LexingSession {
-	return internal.LexerLexingSessionCreate(lexer, content)
+func LexerLexingSessionCreate(lexer *Lexer, content string, fileID uint16) *LexingSession {
+	return internal.LexerLexingSessionCreate(lexer, content, fileID)
 }
 
 func LexingSessionNextResultCreate() *LexingNextResult {
