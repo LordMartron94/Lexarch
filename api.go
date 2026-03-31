@@ -183,6 +183,9 @@ LexerCreate compiles all configured states into a ready-to-use lexer.
 
 Panics on invalid configuration, unresolved state references, duplicate-equivalent rule
 patterns inside a state, or unresolved internal compilation invariants.
+
+Runtime lexing throughput depends on the configured rule set and the input being processed
+(for example rule complexity, active-state transitions, and token distribution).
 */
 func LexerCreate(configuration *LexerConfiguration) *Lexer {
 	return internal.LexerCreate(configuration)
@@ -240,6 +243,7 @@ func LexingSessionPrefillCache(session *LexingSession) error {
 LexingSessionConsume consumes the next token or EOF into out and advances the session cursor.
 
 If the lexer was destroyed, out.LexingError is set to LexerValidationError.
+Throughput for repeated consume calls depends on both lexer rules and input characteristics.
 */
 func LexingSessionConsume(session *LexingSession, out *LexingNextResult) {
 	internal.LexingSessionConsume(session, out)

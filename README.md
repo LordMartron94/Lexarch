@@ -115,6 +115,14 @@ Coordinates are 1-indexed.
 The lexer benchmark suite publishes corpus-size variants (`small`, `medium`, `large`) with
 the same metric keys so Anvil can compare trends directly.
 
+Lexing speed is workload-dependent. The same lexer binary can show different throughput based
+on:
+
+- rule complexity (pattern structure, ambiguity, and total rule count per active state)
+- state-stack behavior (how often rules trigger push/pop/set transitions)
+- input characteristics (length, token distribution, and lexeme mix)
+- benchmark mode and machine class
+
 Primary metrics:
 
 - `chars/op`
@@ -129,6 +137,9 @@ Interpretation guidance:
   disproportionately between adjacent sizes under the same mode/hardware.
 - Regression triage should compare the same suite mode and machine class first, then inspect
   callgrind profile output for hot-path shifts.
+
+Because speed depends on the factors above, comparisons are most meaningful when rule sets and
+input shape are held constant.
 
 ## Current Benchmark Snapshot
 
