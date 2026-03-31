@@ -102,31 +102,7 @@ func GetMainLexerUnits(order int) []shield.Unit {
 	)
 
 	lexRunner := func(input string) LexerLexResult {
-		session := lexarch.LexerLexingSessionCreate(sharedLexer, input)
-		out := lexarch.LexingSessionNextResultCreate()
-
-		var result LexerLexResult
-
-		for {
-			lexarch.LexingSessionConsume(session, out)
-
-			if out.LexingError != nil {
-				result.LexingError = out.LexingError
-				break
-			}
-
-			if out.EOF {
-				result.EOF = true
-				break
-			}
-
-			if out.Token != nil {
-				// Dereference and append the token to our batch slice for testing
-				result.Tokens = append(result.Tokens, *out.Token)
-			}
-		}
-
-		return result
+		return runLexerSessionToEnd(sharedLexer, input, false)
 	}
 
 	// ---------------------------------------------------------
@@ -203,31 +179,7 @@ func GetMainLexerUnits(order int) []shield.Unit {
 
 	// Create a second runner specifically for testing the prefill cache
 	prefillLexRunner := func(input string) LexerLexResult {
-		session := lexarch.LexerLexingSessionCreate(sharedLexer, input)
-
-		err := lexarch.LexingSessionPrefillCache(session)
-		if err != nil {
-			return LexerLexResult{LexingError: err}
-		}
-
-		out := lexarch.LexingSessionNextResultCreate()
-		var result LexerLexResult
-
-		for {
-			lexarch.LexingSessionConsume(session, out)
-			if out.LexingError != nil {
-				result.LexingError = out.LexingError
-				break
-			}
-			if out.EOF {
-				result.EOF = true
-				break
-			}
-			if out.Token != nil {
-				result.Tokens = append(result.Tokens, *out.Token)
-			}
-		}
-		return result
+		return runLexerSessionToEnd(sharedLexer, input, true)
 	}
 
 	validTokenAtomPrefill := shield.AtomCreate(3, "Valid Token Sequences (Prefilled)", prefillLexRunner)
@@ -270,10 +222,7 @@ func GetMainLexerUnits(order int) []shield.Unit {
 	for _, tc := range validTests {
 		tc := tc
 
-		input := ""
-		for _, s := range tc.specs {
-			input += s.text
-		}
+		input := tokenSpecsToInput(tc.specs)
 
 		// 1. Register for Lazy Evaluation
 		lazyCase := shield.CaseCreate(tc.name, input, func(output LexerLexResult) shield.AtomResult {

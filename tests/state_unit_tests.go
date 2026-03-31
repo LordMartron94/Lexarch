@@ -93,25 +93,7 @@ func GetStatefulLexerUnits(order int) []shield.Unit {
 	)
 
 	stateRunner := func(input string) LexerLexResult {
-		session := lexarch.LexerLexingSessionCreate(statefulLexer, input)
-		out := lexarch.LexingSessionNextResultCreate()
-		var result LexerLexResult
-
-		for {
-			lexarch.LexingSessionConsume(session, out)
-			if out.LexingError != nil {
-				result.LexingError = out.LexingError
-				break
-			}
-			if out.EOF {
-				result.EOF = true
-				break
-			}
-			if out.Token != nil {
-				result.Tokens = append(result.Tokens, *out.Token)
-			}
-		}
-		return result
+		return runLexerSessionToEnd(statefulLexer, input, false)
 	}
 
 	stateAtom := shield.AtomCreate(0, "State Transitions", stateRunner)
@@ -172,10 +154,7 @@ func GetStatefulLexerUnits(order int) []shield.Unit {
 	for _, tc := range stateTests {
 		tc := tc
 
-		input := ""
-		for _, s := range tc.specs {
-			input += s.text
-		}
+		input := tokenSpecsToInput(tc.specs)
 
 		testCase := shield.CaseCreate(tc.name, input, func(output LexerLexResult) shield.AtomResult {
 			if output.LexingError != nil {
@@ -450,17 +429,6 @@ func GetStatefulLexerUnits(order int) []shield.Unit {
 
 	lockGuardsAtom := shield.AtomCreate(3, "Lexical Lock Guards", lockGuardsRunner)
 
-	// Helper to assert that illegal parser mutations cause an engine panic
-	expectPanic := func(action func()) (panicked bool) {
-		defer func() {
-			if r := recover(); r != nil {
-				panicked = true
-			}
-		}()
-		action()
-		return false
-	}
-
 	lockTests := []struct {
 		name     string
 		caseDef  SnapshotTestCase
@@ -479,14 +447,7 @@ func GetStatefulLexerUnits(order int) []shield.Unit {
 					panicked := expectPanic(func() {
 						lexarch.LexingSessionPop(session, 1)
 					})
-
-					if !panicked {
-						// It didn't panic. Force a normal error so the outer assertion catches the failure.
-						res.LexingError = fmt.Errorf("LexingSessionPop failed to panic")
-					} else {
-						// It panicked successfully! Force a LexingError so ExpectError evaluates to TRUE.
-						res.LexingError = fmt.Errorf("EXPECTED_PANIC")
-					}
+					setPanicMarker(&res, panicked, "LexingSessionPop failed to panic")
 					return res
 				},
 			},
@@ -505,12 +466,7 @@ func GetStatefulLexerUnits(order int) []shield.Unit {
 					panicked := expectPanic(func() {
 						lexarch.LexingSessionSet(session, "STATE_B")
 					})
-
-					if !panicked {
-						res.LexingError = fmt.Errorf("LexingSessionSet failed to panic")
-					} else {
-						res.LexingError = fmt.Errorf("EXPECTED_PANIC")
-					}
+					setPanicMarker(&res, panicked, "LexingSessionSet failed to panic")
 					return res
 				},
 			},
@@ -538,12 +494,7 @@ func GetStatefulLexerUnits(order int) []shield.Unit {
 					panicked := expectPanic(func() {
 						consumeNext(session, &res) // pop2
 					})
-
-					if !panicked {
-						res.LexingError = fmt.Errorf("lexer-driven pop crossed parser-owned frame without panic")
-					} else {
-						res.LexingError = fmt.Errorf("EXPECTED_PANIC")
-					}
+					setPanicMarker(&res, panicked, "lexer-driven pop crossed parser-owned frame without panic")
 
 					return res
 				},
@@ -601,7 +552,7 @@ func GetStatefulLexerUnits(order int) []shield.Unit {
 				if output.LexingError == nil {
 					return *shield.AtomResultFailureCreate("Expected panic, but execution succeeded")
 				}
-				if output.LexingError.Error() != "EXPECTED_PANIC" {
+				if output.LexingError.Error() != expectedPanicMarker {
 					return *shield.AtomResultFailureCreate(fmt.Sprintf("Expected panic marker, got: %v", output.LexingError))
 				}
 				return *shield.AtomResultSuccessCreate()

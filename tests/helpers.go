@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"errors"
 	"fmt"
 	"lexarch"
 	"shield"
@@ -8,6 +9,7 @@ import (
 )
 
 const errMarker = "‸" // U+2038 CARET, highly unlikely to appear in actual code
+const expectedPanicMarker = "EXPECTED_PANIC"
 
 func parseMarkedInput(marked string) (clean string, offset uint32) {
 	idx := strings.Index(marked, errMarker)
@@ -17,6 +19,63 @@ func parseMarkedInput(marked string) (clean string, offset uint32) {
 
 	clean = strings.Replace(marked, errMarker, "", 1)
 	return clean, uint32(idx)
+}
+
+func tokenSpecsToInput(specs []TokenSpec) string {
+	input := ""
+	for _, spec := range specs {
+		input += spec.text
+	}
+	return input
+}
+
+func runLexerSessionToEnd(lexer *lexarch.Lexer, input string, prefill bool) LexerLexResult {
+	session := lexarch.LexerLexingSessionCreate(lexer, input)
+
+	if prefill {
+		err := lexarch.LexingSessionPrefillCache(session)
+		if err != nil {
+			return LexerLexResult{LexingError: err}
+		}
+	}
+
+	out := lexarch.LexingSessionNextResultCreate()
+	var result LexerLexResult
+
+	for {
+		lexarch.LexingSessionConsume(session, out)
+		if out.LexingError != nil {
+			result.LexingError = out.LexingError
+			break
+		}
+		if out.EOF {
+			result.EOF = true
+			break
+		}
+		if out.Token != nil {
+			result.Tokens = append(result.Tokens, *out.Token)
+		}
+	}
+
+	return result
+}
+
+func expectPanic(action func()) (panicked bool) {
+	defer func() {
+		if recover() != nil {
+			panicked = true
+		}
+	}()
+	action()
+	return false
+}
+
+func setPanicMarker(res *LexerLexResult, panicked bool, failedMsg string) {
+	if !panicked {
+		res.LexingError = errors.New(failedMsg)
+		return
+	}
+	res.LexingError = errors.New(expectedPanicMarker)
 }
 
 type TokenSpec struct {
