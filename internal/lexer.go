@@ -92,7 +92,7 @@ func LexerConfigurationRegisterState(cfg *LexerConfiguration, state LexingState,
 }
 
 func LexerConfigurationSetScratchMemory(cfg *LexerConfiguration, min, max memcore.MemoryUnitBytes) {
-	if min < max {
+	if min > max {
 		panic("max must be bigger than or equal to min")
 	}
 
@@ -101,7 +101,7 @@ func LexerConfigurationSetScratchMemory(cfg *LexerConfiguration, min, max memcor
 }
 
 func LexerConfigurationSetMainMemory(cfg *LexerConfiguration, min, max memcore.MemoryUnitBytes) {
-	if min < max {
+	if min > max {
 		panic("max must be bigger than or equal to min")
 	}
 
