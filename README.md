@@ -1,419 +1,204 @@
 # lexarch
 
-Generic, state-based lexical analysis library for tokenizing slice-backed input using deterministic finite automata.
+State-aware lexer with explicit session APIs, DFA-backed matching, and byte-span based token locations.
 
-## Overview
+## What This Library Provides
 
-`lexarch` provides efficient lexical analysis (tokenization) for processing in-memory observation slices into sequences of tokens. The library uses deterministic finite automata (DFA) compiled from regular expression patterns to recognize tokens with optimal runtime performance. It supports state-based lexing where different rulesets can be active depending on the current lexer state, enabling context-sensitive tokenization.
+`lexarch` compiles per-state token rules into DFAs and exposes a function-oriented API to:
 
-Key features:
+- configure a lexer (`LexerConfiguration*`)
+- define states and rules (`LexingStateCreate`, `LexingRuleCreate`, stack op setters)
+- run lexing sessions (`LexingSession*`)
+- convert byte spans to line/column (`LexerByteSpanToPosition`)
 
-- **Generic Type Support**: Works with any ordered observation type (runes, bytes, tokens) and comparable token types
-- **State-Based Lexing**: Different rulesets per state for context-sensitive tokenization
-- **Inline Token Resolution**: Zero-allocation token resolution using incremental best-match tracking
-- **Longest Match Scanning**: Automatically resolves ambiguous patterns by matching the longest possible token (configurable)
-- **Pretokenized cache**: `LexerConsume` / `LexerPeek` index a lexeme slice materialized from the current session cursor (on demand)
-- **Pattern-Based Definitions**: Uses the `autarch/pattern` RegulaAST system for flexible pattern construction
-- **Position Tracking**: Line numbers, column numbers, and token sequence numbers for error reporting and debugging
+The public API is intentionally explicit and mutable-by-function, not method-oriented.
 
-## Design Philosophy
+## Core Concepts
 
-- **Explicit Memory Management**: All DFAs are compiled and allocated at lexer creation time, enabling zero-allocation tokenization
-- **Generic Type Safety**: Support for any observation type (runes, bytes, tokens) and comparable token outcomes
-- **State-Based Architecture**: Enables context-sensitive lexing where token recognition depends on lexer state
-- **Separation of Concerns**: Data structures (lexers, sessions) are separate from operations (functions), following C-style function-on-data patterns
-- **Cache Efficiency**: DFAs use flat transition tables for optimal memory layout and cache performance
+- **Lexer**: compiled automata and stack operation tables.
+- **Lexing Session**: mutable cursor over one source string with a state stack.
+- **State Stack**: active lexical context; can be changed by parser APIs and by rule-driven stack ops.
+- **Token**: `Kind`, `Role`, `FileID`, and `Span` (`Offset`, `Length`).
+- **Errors**:
+  - runtime errors for user input that cannot be lexed
+  - panics for contract/invariant violations (developer/engine faults)
 
-## Performance Characteristics
+## Minimal Flow
 
-- **Zero Allocations in Hot Paths**: Tokenization uses pre-allocated DFAs and cursors
-- **Cache Efficiency**: DFA transition tables stored as contiguous arrays (state * alphabetSize + symbolID)
-- **Time Complexity**:
-  - Lexer creation: O(2^n * a) worst case per ruleset for NFA-to-DFA conversion, where n is NFA states and a is alphabet size
-  - Token recognition: O(m) where m is the length of the matched token
-  - DFA minimization: O(s log s) where s is DFA states
-- **Space Complexity**:
-  - Lexer: O(s * a) where s is DFA states and a is alphabet size
-  - Slice Session: O(1) for session fields; pretokenize cache is O(tokens) from cursor to EOF when materialized
-  - Lexeme: O(m) where m is token length (`Raw` slices into the session input when `ForceRawCopy` is false)
+1. Create configuration with `LexerConfigurationCreate`.
+2. Create rules with `LexingRuleCreate`.
+3. Build states with `LexingStateCreate`.
+4. Register states via `LexerConfigurationRegisterState`.
+5. Compile lexer with `LexerCreate`.
+6. Start session with `LexerLexingSessionCreate`.
+7. Reuse `LexingSessionNextResultCreate` and call `LexingSessionConsume` until EOF or error.
 
-## Integration
-
-```text
-lexarch
-├── autarch (finite automata, pattern compilation)
-│   └── pattern (RegulaAST pattern system)
-├── memarch (memory allocation)
-│   └── memcore (memory units and types)
-└── memforge (dynamic allocators)
-```
-
-The library integrates with:
-
-- **autarch**: For NFA construction, NFA-to-DFA conversion, and DFA minimization
-- **autarch/pattern**: For building token recognition patterns using RegulaAST
-- **memarch**: For memory allocation during DFA compilation
-- **memforge**: For dynamic linear allocators managing DFA memory
-
-## API
-
-### Ruleset Definition
-
-#### `LexingRulesetCreate[TObservation, TToken, TTokenRole](tokenResolutionStep TokenResolutionStepFn[TToken]) *LexingRuleset`
-
-Creates a new empty ruleset ready for pattern-to-token mappings. The `tokenResolutionStep` parameter
-specifies how to resolve conflicts when multiple tokens match at the same position using inline resolution.
-If `nil`, defaults to `TokenResolutionStepLongest` (longest match). The inline resolution API eliminates
-allocations in the hot path by updating the best match incrementally during scanning.
-
-#### `WithRule(pattern RegulaAST[TObservation], token TToken, role TTokenRole)`
-
-Adds a pattern-to-token mapping to the ruleset. The pattern defines what input sequence matches this token; the role is stored in each produced Lexeme.
-
-#### `WithRulePriority(pattern RegulaAST[TObservation], token TToken, role TTokenRole, priority int)`
-
-Adds a pattern-to-token mapping with an explicit priority. Higher priority values are preferred during
-priority-based resolution. Priority is only used with priority-based resolution functions.
-
-#### `WithTokenResolution(resolutionStep TokenResolutionStepFn[TToken]) *LexingRuleset`
-
-Sets the token resolution step function for the ruleset. This determines which token is selected when
-multiple tokens match at the same position using inline resolution (zero allocations).
-
-**Example:**
+## Example
 
 ```go
-import "autarch/pattern"
+package main
 
-// Default resolution (longest match); role type can be int or your role type
-ruleset := lexarch.LexingRulesetCreate[rune, TokenType, TokenRole](nil)
-ruleset.WithRule(pattern.Literal('i', 'f'), TokenIf, RoleKeyword)
-ruleset.WithRule(pattern.Literal('e', 'l', 's', 'e'), TokenElse, RoleKeyword)
-ruleset.WithRule(pattern.Class(pattern.Range('a', 'z')).Plus(), TokenIdentifier, RoleIdentifier)
-ruleset.WithRule(pattern.Class(pattern.Range('0', '9')).Plus(), TokenNumber, RoleLiteral)
-
-// Custom resolution (first match)
-rulesetFirst := lexarch.LexingRulesetCreate[rune, TokenType, TokenRole](lexarch.TokenResolutionStepFirst[TokenType])
-rulesetFirst.WithRule(pattern.Literal('i', 'f'), TokenIf, RoleKeyword)
-
-// Priority-based resolution
-rulesetPriority := lexarch.LexingRulesetCreate[rune, TokenType, TokenRole](lexarch.TokenResolutionStepPriority[TokenType])
-rulesetPriority.WithRulePriority(pattern.Literal('i', 'f'), TokenIf, RoleKeyword, 10)
-rulesetPriority.WithRule(pattern.Class(pattern.Range('a', 'z')).Plus(), TokenIdentifier, RoleIdentifier)
-```
-
-### Lexer Creation
-
-#### `LexerCreate[TObservation, TState, TToken, TTokenRole](inputRulesets map[TState]LexingRuleset, eofToken TToken, scratchAllocationFn AllocationFn, maxDFAAllocatorMemory MemoryUnitBytes, nfaToDFAPipelineMinTemp MemoryUnitBytes, nfaToDFAPipelineMaxTemp MemoryUnitBytes, observationCtx ObservationCTX[TObservation], compilationMode CompilerMode) *Lexer`
-
-Compiles a set of rulesets into a ready-to-use lexer. Each state's ruleset is compiled to a minimized DFA.
-The `eofToken` is returned when the end of input is reached. `observationCtx` provides observation formatting and domain/toBytes for compilation; use `ObservationCTXCreate(formatter, domain, toBytes)`. `compilationMode` is `lexarch.Thompson` or `lexarch.Glushkov` for NFA construction. `nfaToDFAPipelineMinTemp` and `nfaToDFAPipelineMaxTemp` configure the temporary allocator used during NFA-to-DFA conversion and DFA minimization (e.g. 1*KiloByte, 1*GigaByte).
-
-**Example:**
-
-```go
 import (
-    "memarch"
-    "memcore"
-    "memforge"
-    "lexarch"
     "autarch/pattern"
     "foundation/domain"
+    "lexarch"
 )
 
-type LexerState int
 const (
-    StateNormal LexerState = iota
-    StateString
-    StateComment
+    TokIdentifier lexarch.TokenKind = iota + 1
+    TokWhitespace
 )
 
-type TokenType int
-const (
-    TokenError TokenType = iota
-    TokenEOF
-    TokenIf
-    TokenElse
-    TokenIdentifier
-    TokenNumber
-)
+func buildLexer() *lexarch.Lexer {
+    cfg := lexarch.LexerConfigurationCreate()
 
-type TokenRole int
-const (
-    RoleKeyword TokenRole = iota
-    RoleIdentifier
-    RoleLiteral
-)
+    obsDomain := domain.DiscreteDomainRuneCreate()
+    factory := pattern.RegulaASTFactoryCreate(obsDomain)
+    templates := pattern.RegulaTemplatesCreate(factory)
 
-normalRules := lexarch.LexingRulesetCreate[rune, TokenType, TokenRole](nil)
-normalRules.WithRule(pattern.Literal('i', 'f'), TokenIf, RoleKeyword)
-normalRules.WithRule(pattern.Class(pattern.Range('a', 'z')).Plus(), TokenIdentifier, RoleIdentifier)
+    rules := []*lexarch.LexingRule{
+        lexarch.LexingRuleCreate(templates.Whitespace().Plus(), 1, TokWhitespace, 0),
+        lexarch.LexingRuleCreate(templates.Identifier(), 2, TokIdentifier, 0),
+    }
 
-stringRules := lexarch.LexingRulesetCreate[rune, TokenType, TokenRole](nil)
-stringRules.WithRule(pattern.Class(pattern.Range('a', 'z'), pattern.Range('A', 'Z')).Star(), TokenStringContent, RoleLiteral)
+    initial := lexarch.LexingStateCreate("INITIAL", rules)
+    lexarch.LexerConfigurationRegisterState(cfg, initial, true)
 
-rulesets := map[LexerState]*lexarch.LexingRuleset[rune, TokenType, TokenRole]{
-    StateNormal: normalRules,
-    StateString: stringRules,
+    return lexarch.LexerCreate(cfg)
 }
 
-obsCtx := lexarch.ObservationCTXCreate(
-    lexarch.RuneFormatterDefault(),
-    lexarch.LexarchRuneDomain(),
-    lexarch.RunesToBytesDefault(),
-)
-scratchAlloc := memarch.StackAllocatorCreate(1 * memcore.MegaByte)
-lexer := lexarch.LexerCreate(
-    rulesets,
-    TokenEOF,
-    scratchAlloc.Allocate,
-    10 * memcore.MegaByte,
-    1 * memcore.KiloByte,
-    1 * memcore.GigaByte,
-    obsCtx,
-    lexarch.Glushkov,
-    lexarch.LexerScanConfigDefault(),
-)
-defer lexarch.LexerClose(lexer)
-```
+func main() {
+    lexer := buildLexer()
+    defer lexarch.LexerDestroy(lexer)
 
-#### `LexerClose[TObservation, TState, TToken](lexer *Lexer)`
+    session := lexarch.LexerLexingSessionCreate(lexer, "hello world", 0)
+    out := lexarch.LexingSessionNextResultCreate()
 
-Releases all resources associated with the lexer. Must be called when done with the lexer.
-
-### Session Management
-
-#### `LexerSessionCreate[TObservation, TState, TToken](initialState TState, input []TObservation, newlineDetector NewlineDetector[TObservation], columnAdvanceFn ColumnAdvanceFn[TObservation]) *LexerSession`
-
-Creates a new lexing session with the specified initial state and input stream. The `newlineDetector` callback is used to identify newline characters for position tracking. The `columnAdvanceFn` computes the next column from an observation and current column (e.g. `ColumnAdvanceRune(tabWidth)` for runes). Use `NewlineDetectorRune()` or `NewlineDetectorByte()` for common cases.
-
-#### `LexerSessionCreateRuneFast[TState, TToken, TTokenRole](initialState TState, input []rune, tabWidth int) *LexerSession`
-
-Creates a rune session with explicit fast-path position tracking. This inlines newline and tab handling in the position loop and avoids per-character callback dispatch for line/column updates.
-
-#### `LexerSessionCreateByteFast[TState, TToken, TTokenRole](initialState TState, input []byte) *LexerSession`
-
-Creates a byte session with explicit fast-path position tracking. This inlines newline detection and default column advancement in the position loop.
-
-#### `LexerSessionSetState[TObservation, TState](session *LexerSession, state TState)`
-
-Changes the current lexer state, switching to a different ruleset for subsequent token recognition.
-
-**Example:**
-
-```go
-input := []rune("if x else y")
-session := lexarch.LexerSessionCreate(
-    StateNormal,
-    input,
-    lexarch.NewlineDetectorRune(),
-    lexarch.ColumnAdvanceRune(4),
-)
-
-// Switch to string state when entering string literal
-lexarch.LexerSessionSetState(session, StateString)
-```
-
-### Token Recognition
-
-#### `LexerConsume[TObservation, TState, TToken, TTokenRole](lexer *Lexer, session *LexerSession) Lexeme`
-
-Recognizes and consumes the next token from the input stream at the current position. Advances the session position past the recognized token. Returns the EOF lexeme when the end of input is reached or when the session has a lexing error (check `session.GetLastError()`).
-
-#### `LexerPeek[TObservation, TState, TToken, TTokenRole](lexer *Lexer, session *LexerSession, n int) Lexeme`
-
-Recognizes the n-th upcoming token without advancing the session position. Returns the EOF lexeme when past end of input or on error.
-
-#### `LexerAssertConsume[TObservation, TState, TToken, TTokenRole](lexer *Lexer, session *LexerSession, expected TToken) Lexeme`
-
-Consumes the next token and verifies it matches the expected token type. Sets `session.lastError` (via `GetLastError()`) if mismatch.
-
-#### `LexerAssertPeek[TObservation, TState, TToken, TTokenRole](lexer *Lexer, session *LexerSession, expected TToken, n int) Lexeme`
-
-Peeks at the n-th token and verifies it matches the expected token type without consuming it.
-
-**Example:**
-
-```go
-for {
-    lexeme := lexarch.LexerConsume(lexer, session)
-    if session.GetLastError() != nil {
-        fmt.Printf("Lexing error at position %d: %v\n", session.Position(), session.GetLastError())
-        break
-    }
-
-    if lexeme.Token == TokenEOF {
-        fmt.Println("Reached end of input")
-        break
-    }
-
-    fmt.Printf("Token: %v, Raw: %s, Position: %d-%d, Line: %d, Column: %d\n",
-        lexeme.Token, string(lexeme.Raw), lexeme.Start, lexeme.End,
-        lexeme.StartLine, lexeme.StartColumn)
-
-    if lexeme.Token == TokenStringStart {
-        lexarch.LexerSessionSetState(session, StateString)
-    } else if lexeme.Token == TokenStringEnd {
-        lexarch.LexerSessionSetState(session, StateNormal)
+    for {
+        lexarch.LexingSessionConsume(session, out)
+        if out.LexingError != nil {
+            break
+        }
+        if out.EOF {
+            break
+        }
+        _ = out.Token
     }
 }
 ```
 
-### Data Structures
+## Position Conversion
 
-#### `Lexeme[TObservation, TToken, TTokenRole]`
+Tokens store byte spans only. Convert spans to human-readable line/column with:
 
-Represents a recognized token containing:
+- `LexerByteSpanToPosition(span, source, tabWidth)`
 
-- `Raw []TObservation`: The raw observation sequence that matched
-- `Token TToken`: The token type
-- `Role TTokenRole`: The role assigned when the rule was added
-- `Start, End int`: Byte/observation position in the input stream
-- `StartLine, StartColumn int`: Line and column where token starts (1-indexed)
-- `EndLine, EndColumn int`: Line and column where token ends (1-indexed)
-- `TokenNumber int`: Sequence number of this token (1-indexed)
+Coordinates are 1-indexed.
 
-#### `LexerSession[TObservation, TState, TToken]`
+## Session Operations
 
-Maintains lexing state:
+- `LexingSessionConsume` / `LexingSessionPeek`: normal guarded operations
+- `LexingSessionConsumeUnsafe` / `LexingSessionPeekUnsafe`: skip destroyed-lexer validation
+- `LexingSessionPushStates`, `LexingSessionPop`, `LexingSessionSet`: parser-driven state stack mutation
+- `LexingSessionSnapshotCreate`, `LexingSessionSnapshotRestore`: speculative parse support
+- `LexingSessionPrefillCache`: pre-lex optimization path (currently only meaningful for single-state lexers)
 
-- `currentState TState`: Current lexer state (use `LexerSessionSetState` to change)
-- `input []TObservation`: Input slice (reference)
-- `position int`: Current position in input (use `Position()` method; see snapshot/restore for rollback)
+## Safety Notes
 
-### Lexer scan configuration
+- Always call `LexerDestroy` when done with a lexer.
+- Reuse a `LexingNextResult` object in loops to avoid unnecessary allocations.
+- If a parser API attempts illegal cross-owner stack mutation, the engine panics by design.
+- Use snapshots for speculative flows; restore resets session position and stack state.
 
-`LexerScanConfig` carries optional `Stats` (`*LexScanStats` for observation-step counting) and `ForceRawCopy` (when true, lexeme `Raw` is copied instead of slicing the input). Pass `LexerScanConfigDefault()` or a zero value to `LexerCreate`.
+## Benchmark Scaling Criteria
 
-### Position Tracking and Newline Detection
+The lexer benchmark suite publishes corpus-size variants (`small`, `medium`, `large`) with
+the same metric keys so Anvil can compare trends directly.
 
-The library tracks position information for each token, including line numbers, column numbers, and token sequence numbers. Position tracking requires a `NewlineDetector` callback to identify newline characters.
+Lexing speed is workload-dependent. The same lexer binary can show different throughput based
+on:
 
-#### `NewlineDetector[TObservation]`
+- rule complexity (pattern structure, ambiguity, and total rule count per active state)
+- state-stack behavior (how often rules trigger push/pop/set transitions)
+- input characteristics (length, token distribution, and lexeme mix)
+- benchmark mode and machine class
 
-A callback function type that determines if an observation represents a newline character:
+Primary metrics:
 
-```go
-type NewlineDetector[TObservation cmp.Ordered] func(obs TObservation) bool
-```
+- `chars/op`
+- `tokens/op`
+- `throughput.chars_per_sec`
+- `throughput.tokens_per_sec`
 
-#### Built-in Newline Detectors
+Interpretation guidance:
 
-- `NewlineDetectorRune()`: Detects `'\n'` for rune observations (Unix/Linux line endings)
-- `NewlineDetectorByte()`: Detects `'\n'` for byte observations (Unix/Linux line endings)
+- `tokens/op` must remain stable for a fixed corpus (deterministic output check).
+- `chars/sec` and `tokens/sec` may decline with larger corpora, but should not collapse
+  disproportionately between adjacent sizes under the same mode/hardware.
+- Regression triage should compare the same suite mode and machine class first, then inspect
+  callgrind profile output for hot-path shifts.
 
-**Example:**
+Because speed depends on the factors above, comparisons are most meaningful when rule sets and
+input shape are held constant.
 
-```go
-// For rune-based lexing
-session := lexarch.LexerSessionCreate(StateNormal, input, lexarch.NewlineDetectorRune(), lexarch.ColumnAdvanceRune(4))
+## Current Benchmark Snapshot
 
-// For byte-based lexing (column advance: one column per byte, or provide custom)
-byteAdvance := func(b byte, col int) int { return col + 1 }
-byteSession := lexarch.LexerSessionCreate(StateNormal, byteInput, lexarch.NewlineDetectorByte(), byteAdvance)
+Baseline is `Corpus=small` with median `1.72 us/op`. Here, stable mode means `LexerSuite` runs with `benchtime="15s"` and `runs=8` (per `benchmark_config.toml`).
 
-// Custom newline detector (e.g., for Windows \r\n)
-customDetector := func(obs rune) bool {
-    return obs == '\n' || obs == '\r'
-}
-customSession := lexarch.LexerSessionCreate(StateNormal, input, customDetector)
-```
+### Time/Op Summary
 
-**Position Information in Lexemes:**
+- `Corpus=small`: median `1.72 us`, mean `7.75 us`, `tokens/op=63`, `chars/op=87`
+- `Corpus=medium`: median `23.45 us`, mean `31.50 us`, `tokens/op=875`, `chars/op=1.38k`
+- `Corpus=large`: median `46.31 us`, mean `55.12 us`, `tokens/op=1.75k`, `chars/op=2.90k`
 
-All lexemes include position information:
-- `StartLine`, `StartColumn`: Where the token starts (1-indexed)
-- `EndLine`, `EndColumn`: Where the token ends (1-indexed)
-- `TokenNumber`: Sequence number of the token (1-indexed, increments on each consume)
+Absolute `time/op` rises strongly with larger files, which is expected because each operation
+processes far more input and emits far more tokens.
 
-**Example Usage:**
+### Throughput Summary
 
-```go
-lexeme, err := lexarch.LexerConsume(lexer, session)
-if err != nil {
-    fmt.Printf("Error at line %d, column %d: %v\n", 
-        session.currentLine, session.currentColumn, err)
-    return
-}
+- `throughput.chars_per_sec`
+  - small: `50.7M`
+  - medium: `58.9M`
+  - large: `62.7M`
+- `throughput.tokens_per_sec`
+  - small: `36.7M`
+  - medium: `37.3M`
+  - large: `37.8M`
 
-fmt.Printf("Token %d at line %d, column %d-%d: %s\n",
-    lexeme.TokenNumber,
-    lexeme.StartLine, lexeme.StartColumn,
-    lexeme.EndLine, lexeme.EndColumn,
-    string(lexeme.Raw))
-```
+Throughput does not collapse as corpus size grows; it improves in this run. That indicates
+the lexer hot path remains stable under larger workloads and that fixed per-iteration overheads
+are amortized better on medium/large corpora.
 
-## Use Cases
+### Allocation/GC Summary
 
-- **Programming Language Lexers**: Tokenizing source code for compilers and interpreters
-- **Protocol Parsers**: Recognizing structured data formats (JSON, XML, custom protocols)
-- **Text Processing**: Extracting tokens from structured text (log files, configuration files)
-- **Language Recognition**: Building tokenizers for domain-specific languages
-- **Syntax Highlighting**: Tokenizing code for editor syntax highlighting engines
-- **Data Validation**: Recognizing and validating structured input formats
-## Safety Guidelines
+- allocs/op stays near zero (`0.00`, `0.00`, `0.02`)
+- `gc.count` remains `0` and `gc/op` remains `0.000`
 
-⚠️ **Important:**
+This indicates the benchmark is largely allocation-stable and not dominated by GC in these runs.
 
-1. **Memory Lifetime**: Lexers hold references to allocated DFAs. Ensure allocators remain valid for the lexer's lifetime. Always call `LexerClose` when done.
+### Variability Notes
 
-2. **Input Lifetime**: Unless `ForceRawCopy` is set, `Lexeme.Raw` slices into the session input; the input must remain valid for as long as those lexemes are used.
+- `small` shows high CV (`183%`) and long-tail outliers (`p95=32.51 us`, `p99=56.22 us`) due to very short operation time.
+- `medium` and `large` have lower relative variance (`50%`, `35%` CV respectively), so scaling comparisons are more reliable there.
 
-3. **Peek slice lifetime**: `LexerPeekRange*` results are copied into session-owned scratch storage. Treat returned slices as ephemeral views valid only until the next lexer call on the same session.
+Interpretation rule for regressions: prioritize changes in `throughput.chars_per_sec` and
+`throughput.tokens_per_sec`, then use `time/op` as a secondary metric after normalizing for
+`chars/op` and `tokens/op`.
 
-4. **State Validity**: The session's current state must have a corresponding ruleset in the lexer. Invalid states cause errors on token recognition.
+### Known Perf Pitfall (Current Architecture)
 
-5. **Allocator Sizing**: Ensure `maxDFAAllocatorMemory` is sufficient for DFA storage. The lexer panics if exceeded during compilation.
+In the current lexer design, caching the current state ID as a separate fast-path field
+(instead of resolving from stack top when needed) is a measured regression.
 
-6. **Error handling**: When no pattern matches or on EOF, the lexer returns an EOF lexeme and may set `session.GetLastError()`. Check `GetLastError()` after Consume/Peek to detect lexing errors.
+Reason: push/pop/set paths already synchronize DFA and stack state; adding an extra cached
+state ID introduces additional sync/update work on mutation paths without reducing enough
+hot-loop cost to offset it.
 
-7. **EOF Token**: The EOF token is returned when the end of input is reached (`position >= len(input)`). The EOF lexeme has `Raw == nil` and `Start == End`.
+Observed regression from benchmark comparison:
 
-8. **Concurrent Access**: Multiple sessions can use the same lexer concurrently, but each session should be used by a single goroutine.
+- `Corpus=medium`: `+22.6%` slower
+- `Corpus=small`: `+13.4%` slower
+- `Corpus=large`: `+6.8%` slower
 
-9. **ObservationCTX**: Use `ObservationCTXCreate(formatter, observationDomain, toBytes)`. For runes: `LexarchRuneDomain()`, `RunesToBytesDefault()`, and `RuneFormatterDefault()` or `RuneFormatterCreate(cfg)`.
-
-10. **Debug Re-entrancy Guard**: Session misuse detection (`begin/end` re-entrancy checks) is enabled only in debug builds. Build with `-tags=debug` to enable guard panics; default builds remove this check for zero-overhead API entry paths.
-
-11. **Position Tracking Fast Path**: Fast position tracking is explicit and opt-in. Use `*CreateRuneFast` or `*CreateByteFast` constructors for inlined newline/column updates. Custom callback constructors preserve exact callback semantics through the generic path. The fast kernel rebinds observation slices as `[]rune` or `[]byte` via `unsafe` (no per-element type assertions); only use the rune fast path when `TObservation` is `rune`, and the byte fast path when it is `byte`.
-
-## Implementation Notes
-
-### Inline Token Resolution
-
-The lexer uses inline token resolution to eliminate allocations in the hot path. Instead of collecting all candidate tokens in a slice, the lexer maintains only the current best match and updates it incrementally as it scans. This provides the same flexibility as candidate collection but with zero allocations, making it suitable for high-performance lexing scenarios.
-
-### Priority Storage in DFA Outcomes
-
-Token priorities are stored directly in DFA state outcomes as part of a `TokenOutcome` struct, eliminating hash map lookups during token scanning. When a rule is compiled, its priority is embedded in the DFA outcome, allowing priority-based resolution to access priority values with zero lookups. This optimization is particularly important for large grammars with many accepting states during long token matches.
-
-### Longest Match Scanning
-
-The lexer uses longest match scanning (or other configurable strategies) to resolve ambiguous patterns. When multiple patterns match at the same position, the resolution strategy determines which token is selected. The default strategy is longest match, which ensures that keywords are recognized over identifiers (e.g., "if" as a keyword rather than an identifier).
-
-### DFA Compilation Process
-
-1. Each pattern in a ruleset is compiled to an NFA using Thompson's construction, with token and priority stored as `TokenOutcome` in accepting states
-2. NFAs are merged using alternation (OR) to create a single NFA for the ruleset
-3. The NFA is converted to a DFA via subset construction using default outcome resolution (first match)
-4. The DFA is minimized using Hopcroft's algorithm
-5. The minimized DFA is stored for runtime token recognition
-
-**Note**: DFA construction uses default outcome resolution (first match) since token resolution is handled during scanning. The DFA outcome is just an arbitrary valid outcome when NFA states merge; the real resolution happens during scan-time using the configured `TokenResolutionStepFn`.
-
-### State-Based Lexing
-
-State-based lexing enables context-sensitive tokenization. For example:
-
-- Normal state: Recognizes keywords, identifiers, operators
-- String state: Recognizes string content, escape sequences, string terminators
-- Comment state: Recognizes comment content, comment terminators
-
-State transitions are managed explicitly via `LexerSessionSetState`, allowing parsers to control lexer behavior based on recognized tokens.
-
-## Accuracy and Limitations
-
-- **Pattern Complexity**: Very complex patterns may create large NFAs that explode during DFA conversion. Monitor memory usage during lexer creation.
-- **Alphabet Size**: Large alphabets (e.g., Unicode) may create large transition tables. Consider using character classes to reduce alphabet size.
-- **Position Information**: Position tracking includes byte/observation positions, line numbers, column numbers, and token sequence numbers. Line and column numbers are 1-indexed.
-- **Backtracking**: The lexer does not support backtracking. Once a token is consumed, the position cannot be rolled back. Use `Peek` for lookahead instead.
+GC and heap deltas stayed flat (`gc x1.00`, `heapΔ x1.00`), indicating this is CPU/control-path
+overhead rather than allocation pressure.
