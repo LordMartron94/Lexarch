@@ -103,6 +103,19 @@ Coordinates are 1-indexed.
 - `LexingSessionSnapshotCreate`, `LexingSessionSnapshotRestore`: speculative parse support
 - `LexingSessionPrefillCache`: pre-lex optimization path (currently only meaningful for single-state lexers)
 
+### Peek Lookahead Contract
+
+`LexingSessionPeek` and `LexingSessionPeekUnsafe` use 1-based lookahead indexing:
+
+- `n=1`: immediate next token (same token a `Consume` would return)
+- `n=2`: token after that
+- ...
+
+Important: `n` must be `>= 1`.
+
+Passing `n <= 0` is invalid. Current behavior leaves `out` unchanged (no token fetch loop executes),
+which can surface stale/uninitialized result data in callers. Always pass explicit positive lookahead.
+
 ## Safety Notes
 
 - Always call `LexerDestroy` when done with a lexer.

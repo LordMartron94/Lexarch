@@ -262,12 +262,18 @@ func LexingSessionConsumeUnsafe(session *LexingSession, out *LexingNextResult) {
 LexingSessionPeek evaluates the n-th next token while restoring session state afterwards.
 
 Peek is implemented via snapshot/restore, so it does not mutate final session position.
+Lookahead is 1-based: n=1 returns the immediate next token, n=2 the one after that.
+Contract: n must be >= 1. Passing n <= 0 is invalid and leaves out unchanged.
 */
 func LexingSessionPeek(session *LexingSession, out *LexingNextResult, n int) {
 	internal.LexingSessionPeek(session, out, n)
 }
 
-/* LexingSessionPeekUnsafe is peek without destroyed-lexer validation checks. */
+/*
+LexingSessionPeekUnsafe is peek without destroyed-lexer validation checks.
+
+Semantics match LexingSessionPeek exactly, including 1-based lookahead and n>=1 contract.
+*/
 func LexingSessionPeekUnsafe(session *LexingSession, out *LexingNextResult, n int) {
 	internal.LexingSessionPeekUnsafe(session, out, n)
 }
