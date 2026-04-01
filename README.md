@@ -143,13 +143,13 @@ input shape are held constant.
 
 ## Current Benchmark Snapshot
 
-Baseline is `Corpus=small` with median `2.03 us/op`.
+Baseline is `Corpus=small` with median `1.72 us/op`. Here, stable mode means `LexerSuite` runs with `benchtime="15s"` and `runs=8` (per `benchmark_config.toml`).
 
 ### Time/Op Summary
 
-- `Corpus=small`: median `2.03 us`, mean `7.76 us`, `tokens/op=63`, `chars/op=87`
-- `Corpus=medium`: median `25.08 us`, mean `34.68 us`, `tokens/op=875`, `chars/op=1.38k`
-- `Corpus=large`: median `48.08 us`, mean `52.70 us`, `tokens/op=1.75k`, `chars/op=2.90k`
+- `Corpus=small`: median `1.72 us`, mean `7.75 us`, `tokens/op=63`, `chars/op=87`
+- `Corpus=medium`: median `23.45 us`, mean `31.50 us`, `tokens/op=875`, `chars/op=1.38k`
+- `Corpus=large`: median `46.31 us`, mean `55.12 us`, `tokens/op=1.75k`, `chars/op=2.90k`
 
 Absolute `time/op` rises strongly with larger files, which is expected because each operation
 processes far more input and emits far more tokens.
@@ -157,13 +157,13 @@ processes far more input and emits far more tokens.
 ### Throughput Summary
 
 - `throughput.chars_per_sec`
-  - small: `42.8M`
-  - medium: `55.1M`
-  - large: `60.4M`
+  - small: `50.7M`
+  - medium: `58.9M`
+  - large: `62.7M`
 - `throughput.tokens_per_sec`
-  - small: `31.0M`
-  - medium: `34.9M`
-  - large: `36.4M`
+  - small: `36.7M`
+  - medium: `37.3M`
+  - large: `37.8M`
 
 Throughput does not collapse as corpus size grows; it improves in this run. That indicates
 the lexer hot path remains stable under larger workloads and that fixed per-iteration overheads
@@ -171,15 +171,15 @@ are amortized better on medium/large corpora.
 
 ### Allocation/GC Summary
 
-- allocs/op stays around `1.00-1.02`
+- allocs/op stays near zero (`0.00`, `0.00`, `0.02`)
 - `gc.count` remains `0` and `gc/op` remains `0.000`
 
 This indicates the benchmark is largely allocation-stable and not dominated by GC in these runs.
 
 ### Variability Notes
 
-- `small` shows high CV (`156%`) and long-tail outliers (`p95/p99`) due to very short operation time.
-- `medium` and `large` have lower relative variance (`59%`, `22%` CV respectively), so scaling comparisons are more reliable there.
+- `small` shows high CV (`183%`) and long-tail outliers (`p95=32.51 us`, `p99=56.22 us`) due to very short operation time.
+- `medium` and `large` have lower relative variance (`50%`, `35%` CV respectively), so scaling comparisons are more reliable there.
 
 Interpretation rule for regressions: prioritize changes in `throughput.chars_per_sec` and
 `throughput.tokens_per_sec`, then use `time/op` as a secondary metric after normalizing for
