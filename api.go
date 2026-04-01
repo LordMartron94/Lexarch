@@ -259,6 +259,25 @@ func LexingSessionConsumeUnsafe(session *LexingSession, out *LexingNextResult) {
 }
 
 /*
+LexingSessionCurrent reads the token at the current session cursor without advancing.
+
+Semantically this is equivalent to one-token lookahead at the cursor position.
+If the lexer was destroyed, out.LexingError is set to LexerValidationError.
+*/
+func LexingSessionCurrent(session *LexingSession, out *LexingNextResult) {
+	internal.LexingSessionCurrent(session, out)
+}
+
+/*
+LexingSessionCurrentUnsafe is current-token read without destroyed-lexer validation checks.
+
+Use only where external code already enforces lifecycle correctness.
+*/
+func LexingSessionCurrentUnsafe(session *LexingSession, out *LexingNextResult) {
+	internal.LexingSessionCurrentUnsafe(session, out)
+}
+
+/*
 LexingSessionPeek evaluates the n-th next token while restoring session state afterwards.
 
 Peek is implemented via snapshot/restore, so it does not mutate final session position.

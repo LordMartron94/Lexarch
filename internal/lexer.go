@@ -351,6 +351,25 @@ func LexingSessionConsumeUnsafe(session *LexingSession, out *NextResult) {
 	session.contentOffsetBytes += uint32(advanced)
 }
 
+func LexingSessionCurrent(session *LexingSession, out *NextResult) {
+	if session.lexer.destroyed {
+		out.LexingError = &LexerValidationError{
+			msg: "cannot use a destroyed lexer",
+		}
+		return
+	}
+
+	snap := LexingSessionSnapshotCreate(session)
+	lexingSessionNext(session, out)
+	LexingSessionSnapshotRestore(session, snap)
+}
+
+func LexingSessionCurrentUnsafe(session *LexingSession, out *NextResult) {
+	snap := LexingSessionSnapshotCreate(session)
+	lexingSessionNext(session, out)
+	LexingSessionSnapshotRestore(session, snap)
+}
+
 func LexingSessionPeek(session *LexingSession, out *NextResult, n int) {
 	if session.lexer.destroyed {
 		out.LexingError = &LexerValidationError{

@@ -97,7 +97,9 @@ Coordinates are 1-indexed.
 
 ## Session Operations
 
+- `LexingSessionCurrent`: read token at current cursor without advancing
 - `LexingSessionConsume` / `LexingSessionPeek`: normal guarded operations
+- `LexingSessionCurrentUnsafe`: skip destroyed-lexer validation for current-token read
 - `LexingSessionConsumeUnsafe` / `LexingSessionPeekUnsafe`: skip destroyed-lexer validation
 - `LexingSessionPushStates`, `LexingSessionPop`, `LexingSessionSet`: parser-driven state stack mutation
 - `LexingSessionSnapshotCreate`, `LexingSessionSnapshotRestore`: speculative parse support
