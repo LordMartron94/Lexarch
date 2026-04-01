@@ -4,12 +4,37 @@ import (
 	"autarch/pattern"
 	"fmt"
 	"foundation/extensions"
+	"sync"
 )
 
 // ----------------------------------------------------------------- TOKEN
 
 type TokenKind uint32
 type TokenRole uint32
+
+var tokenKindStringResolversMu sync.RWMutex
+var tokenKindStringResolvers []func(kind TokenKind) (string, bool)
+
+func TokenKindRegisterStringResolver(resolver func(kind TokenKind) (string, bool)) {
+	if resolver == nil {
+		return
+	}
+	tokenKindStringResolversMu.Lock()
+	tokenKindStringResolvers = append(tokenKindStringResolvers, resolver)
+	tokenKindStringResolversMu.Unlock()
+}
+
+func (t TokenKind) String() string {
+	tokenKindStringResolversMu.RLock()
+	for i := len(tokenKindStringResolvers) - 1; i >= 0; i-- {
+		if out, ok := tokenKindStringResolvers[i](t); ok {
+			tokenKindStringResolversMu.RUnlock()
+			return out
+		}
+	}
+	tokenKindStringResolversMu.RUnlock()
+	return fmt.Sprintf("TokenKind(%d)", uint32(t))
+}
 
 type Token struct {
 	// We keep this explicitly small to fit in cache (~64 bytes)

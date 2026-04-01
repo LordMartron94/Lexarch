@@ -133,6 +133,11 @@ func LexerConfigurationSetTokenKindFormatter(cfg *LexerConfiguration, formatter 
 	internal.LexerConfigurationSetTokenKindFormatter(cfg, formatter)
 }
 
+/* TokenKindRegisterStringResolver registers a resolver used by TokenKind.String(). */
+func TokenKindRegisterStringResolver(resolver func(kind TokenKind) (string, bool)) {
+	internal.TokenKindRegisterStringResolver(resolver)
+}
+
 /*
 LexingStateCreate creates a state descriptor with a fixed set of rules.
 
