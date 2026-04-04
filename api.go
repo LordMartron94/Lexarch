@@ -133,6 +133,28 @@ func LexerConfigurationSetTokenKindFormatter(cfg *LexerConfiguration, formatter 
 	internal.LexerConfigurationSetTokenKindFormatter(cfg, formatter)
 }
 
+/*
+LexerConfigurationDisableClientStackMutations forbids parser-driven session stack mutations.
+
+Call before LexerCreate. After compilation, LexingSessionPushStates, LexingSessionPop, and
+LexingSessionSet panic if invoked. Rule-attached stack operations (LexingRuleSetStackPush,
+LexingRuleSetStackPop, LexingRuleSetStackSet) still apply when their patterns match, because
+those transitions are lexer-owned.
+
+LexingSessionSnapshotCreate and LexingSessionSnapshotRestore remain valid: restore rewinds
+full session state and is not treated as an incremental parser mutation.
+
+LexingSessionPrefillCache performs real work in this mode even when the lexer has multiple
+states (otherwise it is only meaningful for single-state lexers). Stack changes during the
+pre-fill scan come only from rule-driven operations, which matches the no-parser-mutation contract.
+
+Use this when every lexical context change is expressed in rules and client code must not
+touch the stack, or when you want a hard integration boundary with a small public surface.
+*/
+func LexerConfigurationDisableClientStackMutations(cfg *LexerConfiguration) {
+	internal.LexerConfigurationDisableClientStackMutations(cfg)
+}
+
 /* TokenKindRegisterStringResolver registers a resolver used by TokenKind.String(). */
 func TokenKindRegisterStringResolver(resolver func(kind TokenKind) (string, bool)) {
 	internal.TokenKindRegisterStringResolver(resolver)
@@ -237,7 +259,10 @@ func LexingSessionNextResultCreate() *LexingNextResult {
 /*
 LexingSessionPrefillCache lexes the remaining input ahead of time and stores token cache entries.
 
-This operation is currently only meaningful when the lexer has a single state.
+It is a no-op unless the lexer has exactly one state or LexerConfigurationDisableClientStackMutations
+was set before LexerCreate. In the latter case, pre-fill runs for any number of states, because
+only lexer-owned stack transitions can occur during the scan.
+
 Returns the first encountered runtime error while pre-filling.
 */
 func LexingSessionPrefillCache(session *LexingSession) error {
@@ -307,8 +332,11 @@ LexingSessionPushStates pushes parser-owned states onto the stack.
 
 Parser-owned frames may later be mutated by parser APIs.
 Targets must reference registered state descriptors.
+
+Panics if LexerConfigurationDisableClientStackMutations was used before LexerCreate.
 */
 func LexingSessionPushStates(session *LexingSession, states ...string) {
+	internal.LexingSessionValidateStateMutation(session)
 	internal.LexingSessionPushStates(session, false, states...)
 }
 
@@ -317,8 +345,11 @@ LexingSessionPop pops parser-owned stack frames.
 
 Panics if a parser call attempts to pop across lexer-owned frames.
 Pop requests that exceed available mutable frames clamp at the stack bottom marker.
+
+Panics if LexerConfigurationDisableClientStackMutations was used before LexerCreate.
 */
 func LexingSessionPop(session *LexingSession, amount int) {
+	internal.LexingSessionValidateStateMutation(session)
 	internal.LexingSessionPop(session, false, amount)
 }
 
@@ -327,8 +358,11 @@ LexingSessionSet replaces the parser-visible top frame with parser-owned targets
 
 This is implemented as pop(1) + push(targets...).
 Panics if replacing would cross lexer-owned ownership boundaries.
+
+Panics if LexerConfigurationDisableClientStackMutations was used before LexerCreate.
 */
 func LexingSessionSet(session *LexingSession, targets ...string) {
+	internal.LexingSessionValidateStateMutation(session)
 	internal.LexingSessionSet(session, false, targets...)
 }
 

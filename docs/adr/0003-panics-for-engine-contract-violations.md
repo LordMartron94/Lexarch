@@ -23,6 +23,7 @@ Panics are used for developer or engine failures.
 Examples include:
 
 - illegal cross-owner stack mutation attempts
+- parser stack mutation APIs (`LexingSessionPushStates`, `LexingSessionPop`, `LexingSessionSet`) when the lexer was configured with `LexerConfigurationDisableClientStackMutations` before `LexerCreate`
 - impossible internal state transitions
 - misconfigured or contradictory setup that breaks invariants
 

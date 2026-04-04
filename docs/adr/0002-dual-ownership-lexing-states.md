@@ -30,3 +30,16 @@ This model preserves separation of concern:
 - The runtime composes both mutation sources with explicit ownership boundaries, preventing silent cross-owner stack corruption.
 
 This decision favors explicitness, debuggability, and predictable failure behavior over permissive but ambiguous stack mutation semantics.
+
+## Optional hard restriction
+
+Configurations may call `LexerConfigurationDisableClientStackMutations` before compilation so that
+parser-facing push/pop/set APIs are rejected at runtime (panic). Rule-driven stack operations
+remain the only way to change the stack during lexing. Snapshot restore is still permitted
+because it is time-travel over captured session state, not an ownership-violating incremental
+mutation. This is intended for grammars that encode all mode switches in lexer rules and for
+integrations that want a strict boundary against accidental parser stack use.
+
+In that configuration, `LexingSessionPrefillCache` is allowed to run a full-input warm-up pass
+for multi-state lexers as well (not only single-state), because stack motion during the scan is
+limited to lexer rule stack operations.

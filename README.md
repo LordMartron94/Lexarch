@@ -6,7 +6,7 @@ State-aware lexer with explicit session APIs, DFA-backed matching, and byte-span
 
 `lexarch` compiles per-state token rules into DFAs and exposes a function-oriented API to:
 
-- configure a lexer (`LexerConfiguration*`)
+- configure a lexer (`LexerConfiguration*`, including optional `LexerConfigurationDisableClientStackMutations`)
 - define states and rules (`LexingStateCreate`, `LexingRuleCreate`, stack op setters)
 - run lexing sessions (`LexingSession*`)
 - convert byte spans to line/column (`LexerByteSpanToPosition`)
@@ -17,7 +17,7 @@ The public API is intentionally explicit and mutable-by-function, not method-ori
 
 - **Lexer**: compiled automata and stack operation tables.
 - **Lexing Session**: mutable cursor over one source string with a state stack.
-- **State Stack**: active lexical context; can be changed by parser APIs and by rule-driven stack ops.
+- **State Stack**: active lexical context; can be changed by parser APIs and by rule-driven stack ops, or by rules alone if client stack mutations are disabled (see below).
 - **Token**: `Kind`, `Role`, `FileID`, and `Span` (`Offset`, `Length`).
 - **Errors**:
   - runtime errors for user input that cannot be lexed
@@ -102,8 +102,8 @@ Coordinates are 1-indexed.
 - `LexingSessionCurrentUnsafe`: skip destroyed-lexer validation for current-token read
 - `LexingSessionConsumeUnsafe` / `LexingSessionPeekUnsafe`: skip destroyed-lexer validation
 - `LexingSessionPushStates`, `LexingSessionPop`, `LexingSessionSet`: parser-driven state stack mutation
-- `LexingSessionSnapshotCreate`, `LexingSessionSnapshotRestore`: speculative parse support
-- `LexingSessionPrefillCache`: pre-lex optimization path (currently only meaningful for single-state lexers)
+- `LexingSessionSnapshotCreate`, `LexingSessionSnapshotRestore`: speculative parse support (still allowed when client stack mutations are disabled)
+- `LexingSessionPrefillCache`: pre-lex optimization path; runs for single-state lexers, or for any state count when `LexerConfigurationDisableClientStackMutations` was used (otherwise a no-op for multi-state lexers)
 
 ### Peek Lookahead Contract
 
@@ -118,11 +118,27 @@ Important: `n` must be `>= 1`.
 Passing `n <= 0` is invalid. Current behavior leaves `out` unchanged (no token fetch loop executes),
 which can surface stale/uninitialized result data in callers. Always pass explicit positive lookahead.
 
+### Disabling client stack mutations
+
+Call `LexerConfigurationDisableClientStackMutations` on the configuration **before** `LexerCreate`
+when the lexer should not accept parser-driven stack changes. In that mode:
+
+- `LexingSessionPushStates`, `LexingSessionPop`, and `LexingSessionSet` panic if called.
+- Stack transitions attached to rules (`LexingRuleSetStackPush` / `Pop` / `Set`) still run when
+  tokens match; those updates are lexer-owned.
+- Snapshot create/restore still works; restore is full session rewind, not a parser mutation API.
+- `LexingSessionPrefillCache` actually pre-fills (not a no-op) even when there are multiple states,
+  because the scan cannot interleave parser stack calls—only rule-driven stack updates apply.
+
+The engine also skips per-pop ownership checks on lexer-driven pops when this flag is set, which
+avoids redundant work for lexers that never create parser-owned frames.
+
 ## Safety Notes
 
 - Always call `LexerDestroy` when done with a lexer.
 - Reuse a `LexingNextResult` object in loops to avoid unnecessary allocations.
 - If a parser API attempts illegal cross-owner stack mutation, the engine panics by design.
+- If client stack mutations were disabled at lexer build time, parser stack APIs panic on use.
 - Use snapshots for speculative flows; restore resets session position and stack state.
 
 ## Benchmark Scaling Criteria

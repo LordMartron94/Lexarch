@@ -46,6 +46,8 @@ type LexerConfiguration struct {
 	minMainMem, maxMainMem       memcore.MemoryUnitBytes
 
 	kindFormatter func(kind TokenKind) string
+
+	noClientStackMutations bool
 }
 
 func LexerConfigurationCreate() *LexerConfiguration {
@@ -60,6 +62,7 @@ func LexerConfigurationCreate() *LexerConfiguration {
 		kindFormatter: func(kind TokenKind) string {
 			return fmt.Sprintf("%d", kind)
 		},
+		noClientStackMutations: false,
 	}
 }
 
@@ -111,6 +114,10 @@ func LexerConfigurationSetMainMemory(cfg *LexerConfiguration, min, max memcore.M
 
 func LexerConfigurationSetTokenKindFormatter(cfg *LexerConfiguration, formatter func(kind TokenKind) string) {
 	cfg.kindFormatter = formatter
+}
+
+func LexerConfigurationDisableClientStackMutations(cfg *LexerConfiguration) {
+	cfg.noClientStackMutations = true
 }
 
 // ----------------------------------------------------------- LEXER
@@ -213,6 +220,8 @@ type LexingSession struct {
 	fileID             uint16
 
 	tempToken *Token
+
+	popStack func(session *LexingSession, lexerRequested bool, amount int)
 }
 
 const bottomOfStackMarker = ^int(0)
@@ -228,6 +237,12 @@ func LexerLexingSessionCreate(lexer *Lexer, content string, fileID uint16) *Lexi
 	stack[1] = stackFrame{
 		id:           lexer.startState,
 		ownedByLexer: true,
+	}
+
+	popStack := lexingSessionPopWithValidation
+
+	if lexer.config.noClientStackMutations {
+		popStack = lexingSessionPopNoValidation
 	}
 
 	return &LexingSession{
@@ -249,6 +264,7 @@ func LexerLexingSessionCreate(lexer *Lexer, content string, fileID uint16) *Lexi
 				Length: 0,
 			},
 		},
+		popStack: popStack,
 	}
 }
 
@@ -320,7 +336,7 @@ func LexingSessionPrefillCache(session *LexingSession) error {
 	// This is a no-op if there are more than 1 state rules...
 	// thus this is safe to call for clients every time
 
-	if len(session.lexer.stateRules) == 1 {
+	if session.lexer.config.noClientStackMutations || len(session.lexer.stateRules) == 1 {
 		out := LexingSessionNextResultCreate()
 		for {
 			LexingSessionConsumeUnsafe(session, out)
@@ -426,6 +442,26 @@ func LexingSessionPushStates(session *LexingSession, lexerOwned bool, states ...
 }
 
 func LexingSessionPop(session *LexingSession, lexerRequested bool, amount int) {
+	session.popStack(session, lexerRequested, amount)
+}
+
+func LexingSessionSet(session *LexingSession, ownedByLexer bool, targets ...string) {
+	// TODO - inline the logic for performance
+
+	LexingSessionPop(session, ownedByLexer, 1)
+	LexingSessionPushStates(session, ownedByLexer, targets...)
+}
+
+func LexingSessionValidateStateMutation(session *LexingSession) {
+	if session.lexer.config.noClientStackMutations {
+		panic("error: client is not allowed to mutate the lexer state stack")
+	}
+}
+
+// ----------------------------------------------------------- PRIVATE HELPERS
+
+//go:inline
+func lexingSessionPopWithValidation(session *LexingSession, lexerRequested bool, amount int) {
 	currentLen := int(session.lexingStateStackDepth)
 
 	if amount <= 0 || currentLen <= 1 {
@@ -460,14 +496,37 @@ func LexingSessionPop(session *LexingSession, lexerRequested bool, amount int) {
 	lexingSessionSetDFAForState(session, session.lexingStateStack[session.lexingStateStackDepth-1].id)
 }
 
-func LexingSessionSet(session *LexingSession, ownedByLexer bool, targets ...string) {
-	// TODO - inline the logic for performance
+//go:inline
+func lexingSessionPopNoValidation(session *LexingSession, _ bool, amount int) {
+	currentLen := int(session.lexingStateStackDepth)
 
-	LexingSessionPop(session, ownedByLexer, 1)
-	LexingSessionPushStates(session, ownedByLexer, targets...)
+	if amount <= 0 || currentLen <= 1 {
+		return
+	}
+
+	targetIdx := currentLen - amount
+	if targetIdx < 1 {
+		targetIdx = 1
+	}
+
+	newLen := currentLen
+	for i := currentLen - 1; i >= targetIdx; i-- {
+		frame := session.lexingStateStack[i]
+
+		if frame.id == bottomOfStackMarker {
+			break
+		}
+		newLen = i
+	}
+
+	if newLen < 1 {
+		newLen = 1
+	}
+
+	session.lexingStateStackDepth = uint8(newLen)
+
+	lexingSessionSetDFAForState(session, session.lexingStateStack[session.lexingStateStackDepth-1].id)
 }
-
-// ----------------------------------------------------------- PRIVATE HELPERS
 
 //go:inline
 //go:nosplit
