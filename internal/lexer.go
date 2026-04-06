@@ -452,6 +452,17 @@ func LexingSessionSet(session *LexingSession, ownedByLexer bool, targets ...stri
 	LexingSessionPushStates(session, ownedByLexer, targets...)
 }
 
+func LexingSessionStateCurrent(session *LexingSession) string {
+	if session == nil || session.lexingStateStackDepth < 1 {
+		return ""
+	}
+	top := session.lexingStateStack[session.lexingStateStackDepth-1]
+	if top.id == bottomOfStackMarker {
+		return ""
+	}
+	return session.lexer.config.states[top.id].descriptor
+}
+
 func LexingSessionValidateStateMutation(session *LexingSession) {
 	if session.lexer.config.noClientStackMutations {
 		panic("error: client is not allowed to mutate the lexer state stack")

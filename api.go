@@ -367,6 +367,16 @@ func LexingSessionSet(session *LexingSession, targets ...string) {
 }
 
 /*
+LexingSessionStateCurrent returns the descriptor string of the top stack frame (the active lexing state).
+
+This is the same name used in LexerConfigurationRegisterState. The bottom sentinel frame
+is not a named state; the function returns an empty string if the top frame is that marker.
+*/
+func LexingSessionStateCurrent(session *LexingSession) string {
+	return internal.LexingSessionStateCurrent(session)
+}
+
+/*
 LexingSessionSnapshotCreate captures current offset and stack state for later restoration.
 
 Snapshots are value objects and may be stored by callers for speculative workflows.
