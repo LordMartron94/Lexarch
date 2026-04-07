@@ -180,7 +180,8 @@ type TokenOutcome struct {
 	Role     TokenRole
 	Priority int
 
-	StackOperationID *int
+	StackOperationID  int
+	HasStackOperation bool
 }
 
 // ----------------------------------------------------------------- GENERIC

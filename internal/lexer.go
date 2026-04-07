@@ -645,8 +645,8 @@ func lexToken(
 				session.tempToken.Role = outcome.Value.Role
 				session.tempToken.Span.Length = uint32(currentLengthBytes)
 
-				if outcome.Value.StackOperationID != nil {
-					bestStackOperationID = *outcome.Value.StackOperationID
+				if outcome.Value.HasStackOperation {
+					bestStackOperationID = outcome.Value.StackOperationID
 				} else {
 					bestStackOperationID = -1
 				}
@@ -778,7 +778,8 @@ func compileState(
 			if stackOpID == -1 {
 				panic("engine error: unresolved stack operation ID")
 			}
-			ruleOutcome.StackOperationID = &stackOpID
+			ruleOutcome.StackOperationID = stackOpID
+			ruleOutcome.HasStackOperation = true
 		}
 
 		instructions[i] = pattern.PatternCompilationInstruction[rune, TokenOutcome, pattern.RegulaAST[rune]]{
