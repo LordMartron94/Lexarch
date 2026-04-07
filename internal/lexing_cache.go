@@ -4,9 +4,11 @@ const tokenCacheSize = 1024
 const tokenCacheMask = tokenCacheSize - 1
 
 type cacheEntry struct {
-	key   uint64
-	token Token
-	valid bool
+	key               uint64
+	token             Token
+	hasStackOperation bool
+	stackOperationID  int
+	valid             bool
 }
 
 type TokenCache struct {
@@ -17,24 +19,26 @@ func TokenCacheCreate() *TokenCache {
 	return &TokenCache{entries: [1024]cacheEntry{}}
 }
 
-func TokenCachePut(cache *TokenCache, key uint64, token *Token) {
+func TokenCachePut(cache *TokenCache, key uint64, token *Token, hasStackOperation bool, stackOperationID int) {
 	idx := key & tokenCacheMask
 	cache.entries[idx] = cacheEntry{
-		key:   key,
-		token: *token,
-		valid: true,
+		key:               key,
+		token:             *token,
+		hasStackOperation: hasStackOperation,
+		stackOperationID:  stackOperationID,
+		valid:             true,
 	}
 }
 
-func TokenCacheGet(cache *TokenCache, key uint64) (*Token, bool) {
+func TokenCacheGet(cache *TokenCache, key uint64) (*Token, bool, bool, int) {
 	idx := key & tokenCacheMask
 	entry := &cache.entries[idx]
 
 	if entry.valid && entry.key == key {
-		return &entry.token, true
+		return &entry.token, true, entry.hasStackOperation, entry.stackOperationID
 	}
 
-	return nil, false
+	return nil, false, false, -1
 }
 
 func TokenCacheClear(cache *TokenCache) {

@@ -573,8 +573,11 @@ func lexingSessionNext(session *LexingSession, out *NextResult) (advanced uint32
 	}
 
 	currentStateID := currentState.id
-	if cachedToken, ok := TokenCacheGet(session.lexingContentCache, getCacheKey(session.contentOffsetBytes, currentStateID)); ok {
+	if cachedToken, ok, hasStackOperation, stackOperationID := TokenCacheGet(session.lexingContentCache, getCacheKey(session.contentOffsetBytes, currentStateID)); ok {
 		out.Token = cachedToken
+		if hasStackOperation {
+			applyStackOperation(session, stackOperationID)
+		}
 		return cachedToken.Span.Length
 	}
 
@@ -656,7 +659,13 @@ func lexToken(
 
 	if furthestMatchBytes != -1 {
 		result.Token = session.tempToken
-		TokenCachePut(session.lexingContentCache, getCacheKey(absoluteOffset, currentStateID), session.tempToken)
+		TokenCachePut(
+			session.lexingContentCache,
+			getCacheKey(absoluteOffset, currentStateID),
+			session.tempToken,
+			bestStackOperationID != -1,
+			bestStackOperationID,
+		)
 
 		if bestStackOperationID != -1 {
 			applyStackOperation(session, bestStackOperationID)
