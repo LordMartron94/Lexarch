@@ -9,7 +9,6 @@ import (
 	"memarch"
 	"memcore"
 	"memforge"
-	"memstruct"
 	"slices"
 	"unicode/utf8"
 )
@@ -150,10 +149,12 @@ func LexerCreate(cfg *LexerConfiguration) *Lexer {
 	scratchAllocator := memforge.DynamicLinearAllocatorCreateFunction(
 		uint64(cfg.minScratchMem),
 		memforge.DynamicLinearAllocatorGrowthTemplateDoubleOrNeededWithMaxPanic(uint64(cfg.maxScratchMem)),
+		"lexarch scratch",
 	)
 	mainAllocator := memforge.DynamicLinearAllocatorCreateFunction(
 		uint64(cfg.minMainMem),
 		memforge.DynamicLinearAllocatorGrowthTemplateDoubleOrNeededWithMaxPanic(uint64(cfg.maxMainMem)),
+		"lexarch main",
 	)
 
 	stackOperations := computeStackOperations(cfg.states)
@@ -173,10 +174,6 @@ func LexerCreate(cfg *LexerConfiguration) *Lexer {
 		if state.descriptor == cfg.startState {
 			startState = i
 		}
-	}
-
-	for _, dfa := range stateRules {
-		autarch.DFARefreshCursors(dfa)
 	}
 
 	return &Lexer{
@@ -213,7 +210,6 @@ type LexingSession struct {
 	lexingStateStackDepth uint8
 
 	dfa                *autarch.DFA[rune, pattern.AnnotatedOutcome[TokenOutcome]]
-	dfaCursor          memstruct.ArrayCursor[uint64]
 	lexingContentCache *TokenCache
 
 	contentOffsetBytes uint32
@@ -228,7 +224,6 @@ const bottomOfStackMarker = ^int(0)
 
 func LexerLexingSessionCreate(lexer *Lexer, content string, fileID uint16) *LexingSession {
 	dfa := lexer.stateRules[lexer.startState]
-	cursor := autarch.DFACursorGet(dfa)
 	stack := [lexingStackDepthMax]stackFrame{}
 	stack[0] = stackFrame{
 		id:           bottomOfStackMarker,
@@ -251,7 +246,6 @@ func LexerLexingSessionCreate(lexer *Lexer, content string, fileID uint16) *Lexi
 		lexingStateStack:      stack,
 		lexingStateStackDepth: 2,
 		dfa:                   dfa,
-		dfaCursor:             cursor,
 		contentOffsetBytes:    0,
 		lexingContentCache:    TokenCacheCreate(),
 		fileID:                fileID,
@@ -270,12 +264,10 @@ func LexerLexingSessionCreate(lexer *Lexer, content string, fileID uint16) *Lexi
 
 func LexerLexingSessionReset(lexer *Lexer, session *LexingSession, content string, fileID uint16) {
 	dfa := lexer.stateRules[lexer.startState]
-	cursor := autarch.DFACursorGet(dfa)
 
 	session.lexer = lexer
 	session.content = content
 	session.dfa = dfa
-	session.dfaCursor = cursor
 	session.contentOffsetBytes = 0
 	session.fileID = fileID
 
@@ -542,11 +534,7 @@ func lexingSessionPopNoValidation(session *LexingSession, _ bool, amount int) {
 //go:inline
 //go:nosplit
 func lexingSessionSetDFAForState(session *LexingSession, state int) {
-	dfa := session.lexer.stateRules[state]
-	cursor := autarch.DFACursorGet(dfa)
-
-	session.dfa = dfa
-	session.dfaCursor = cursor
+	session.dfa = session.lexer.stateRules[state]
 }
 
 //go:inline
@@ -610,7 +598,7 @@ func lexToken(
 	highestPriority := -1
 
 	for offset, char := range contentSlice {
-		nextDFAState, err := autarch.DFAStep(session.dfa, dfaState, char, session.dfaCursor)
+		nextDFAState, err := autarch.DFAStep(session.dfa, dfaState, char)
 
 		if err != nil {
 			if furthestMatchBytes != -1 {
